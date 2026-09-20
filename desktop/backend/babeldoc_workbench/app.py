@@ -340,7 +340,13 @@ def start_server(app, sock: socket.socket):
     """在后台线程用已绑定的套接字启动服务。"""
     import uvicorn
 
-    config = uvicorn.Config(app, log_level="warning", access_log=False)
+    # log_config=None：跳过 uvicorn 自己的 dictConfig。它会创建依赖
+    # sys.stdout.isatty() 的 formatter，而双击启动的冻结版没有控制台，
+    # 会因此崩溃（表现为「点击无反应」）。日志改由本项目自己的
+    # logging_setup 统一处理，uvicorn 的 logger 会向上传播到根 logger。
+    config = uvicorn.Config(
+        app, log_level="warning", access_log=False, log_config=None
+    )
     server = uvicorn.Server(config)
     thread = threading.Thread(
         target=server.run, kwargs={"sockets": [sock]}, name="babeldoc-http", daemon=True
@@ -503,7 +509,9 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         import webview
 
         bridge = DesktopBridge()
-        window = webview.create_window(SELF_CHECK_TITLE, url, js_api=bridge)
+        # 窗口默认展示工作台界面（步骤 6 起 "/" 返回前端构建产物）；
+        # 早期版本这里用的是自检页标题，会让用户以为只打开了自检工具。
+        window = webview.create_window(WINDOW_TITLE, url, js_api=bridge)
         bridge.window = window
         closing_state = {"decided": False}
 
