@@ -18,6 +18,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 
 import { api, chooseDirectory } from "../api";
+import { formatSize } from "../format";
 import type { ApiProfile } from "../types";
 import { describeError } from "./WorkbenchPanel";
 
@@ -163,6 +164,52 @@ export default function SettingsDrawer({ open, onClose }: Props) {
     onError: (error) => message.error(describeError(error)),
   });
 
+  const assetsQuery = useQuery({
+    queryKey: ["assets-usage"],
+    queryFn: api.assetsUsage,
+    enabled: open,
+  });
+  const downloadAssetsMutation = useMutation({
+    mutationFn: api.downloadAssets,
+    onSuccess: (result) => {
+      if (result.ok) {
+        message.success("资源下载与校验完成");
+      } else {
+        message.warning("资源下载未完成，请查看日志后重试");
+      }
+      queryClient.invalidateQueries({ queryKey: ["assets-usage"] });
+    },
+    onError: (error) => message.error(describeError(error)),
+  });
+  const packAssetsMutation = useMutation({
+    mutationFn: async () => {
+      const directory = await chooseDirectory(null);
+      return api.packAssets(directory);
+    },
+    onSuccess: (result) => {
+      message[result.ok ? "success" : "warning"](
+        result.ok ? "离线资源包已生成，请在所选目录中查看" : "生成离线资源包失败，请查看日志",
+      );
+    },
+    onError: (error) => message.error(describeError(error)),
+  });
+  const restoreAssetsMutation = useMutation({
+    mutationFn: async () => {
+      const path = window.prompt("请输入离线资源包（zip）或资源目录的完整路径：", "");
+      if (!path) {
+        throw new Error("已取消导入");
+      }
+      return api.restoreAssets(path.trim());
+    },
+    onSuccess: (result) => {
+      message[result.ok ? "success" : "warning"](
+        result.ok ? "离线资源包已导入" : "导入离线资源包失败，请检查文件是否完整",
+      );
+      queryClient.invalidateQueries({ queryKey: ["assets-usage"] });
+    },
+    onError: (error) => message.error(describeError(error)),
+  });
+
   const columns: ColumnsType<ApiProfile> = [
     {
       title: "名称",
@@ -285,6 +332,37 @@ export default function SettingsDrawer({ open, onClose }: Props) {
         <span className="hint-text" style={{ marginLeft: 8 }}>
           包含版本信息、任务参数快照与脱敏日志，不含 API Key 与文档正文。
         </span>
+      </div>
+
+      <Typography.Title level={5} style={{ marginTop: 16 }}>
+        资源
+      </Typography.Title>
+      <div className="hint-text">
+        引擎资源目录：{assetsQuery.data?.path ?? "读取中…"}（占用{" "}
+        {formatSize(assetsQuery.data?.total_bytes ?? 0)}）
+      </div>
+      <Space style={{ marginTop: 8 }} wrap>
+        <Button
+          loading={downloadAssetsMutation.isPending}
+          onClick={() => downloadAssetsMutation.mutate()}
+        >
+          下载缺失资源
+        </Button>
+        <Button
+          loading={packAssetsMutation.isPending}
+          onClick={() => packAssetsMutation.mutate()}
+        >
+          导出离线资源包
+        </Button>
+        <Button
+          loading={restoreAssetsMutation.isPending}
+          onClick={() => restoreAssetsMutation.mutate()}
+        >
+          导入离线资源包
+        </Button>
+      </Space>
+      <div className="hint-text" style={{ marginTop: 4 }}>
+        模型与字体由引擎管理，路径固定为 %USERPROFILE%\.cache\babeldoc；离线资源包适用于无法访问模型上游的网络环境。
       </div>
 
       <Typography.Title level={5}>API 配置</Typography.Title>

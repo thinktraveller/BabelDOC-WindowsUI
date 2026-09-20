@@ -433,12 +433,31 @@ def run_app(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--verify-timeout", type=float, default=1800.0, help="验证任务总超时秒数"
     )
+    parser.add_argument(
+        "--download-assets",
+        action="store_true",
+        help="（内部使用）下载并校验模型、字体与 tiktoken 资源后退出",
+    )
+    parser.add_argument(
+        "--pack-assets",
+        nargs="?",
+        const="",
+        default=None,
+        help="（内部使用）生成离线资源包，可选目标目录",
+    )
+    parser.add_argument(
+        "--restore-assets",
+        default=None,
+        help="（内部使用）从离线资源包或目录还原资源",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if args.self_check:
         return run_self_check(args)
     if args.verify_job:
         return run_verify_job(args)
+    if args.download_assets or args.pack_assets is not None or args.restore_assets:
+        return run_assets_command(args)
 
     # 应用数据目录：不可写时明确报错，不退化为临时目录
     try:
@@ -561,6 +580,29 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         set_queue(None)
         queue.stop()
         lock.release()
+
+
+def run_assets_command(args: argparse.Namespace) -> int:
+    """内部使用：在独立进程里执行资源下载/打包/还原。
+
+    引擎在资源失败时会 ``exit(1)``，所以这些操作必须由服务进程以子进程方式调用。
+    """
+    from babeldoc.assets import assets as engine_assets
+
+    if args.download_assets:
+        engine_assets.warmup()
+        print("资源下载与校验完成")
+        return 0
+    if args.pack_assets is not None:
+        target = Path(args.pack_assets) if args.pack_assets else None
+        engine_assets.generate_offline_assets_package(target)
+        print("离线资源包已生成")
+        return 0
+    if args.restore_assets:
+        engine_assets.restore_offline_assets_package(Path(args.restore_assets))
+        print("离线资源包已还原")
+        return 0
+    return 0
 
 
 def run_verify_job(args: argparse.Namespace) -> int:

@@ -311,6 +311,29 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ destination_dir: destinationDir ?? null }),
     }),
+  assetsUsage: () =>
+    request<{
+      path: string;
+      total_bytes: number;
+      groups: Record<string, { files: number; bytes: number }>;
+    }>("/api/app/assets/usage"),
+  downloadAssets: () =>
+    request<{ ok: boolean; returncode: number; stderr?: string }>(
+      "/api/app/assets/download",
+      { method: "POST" },
+    ),
+  packAssets: (targetDir?: string | null) =>
+    request<{ ok: boolean; stdout?: string; stderr?: string }>("/api/app/assets/pack", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_dir: targetDir ?? null }),
+    }),
+  restoreAssets: (packagePath: string) =>
+    request<{ ok: boolean; stdout?: string; stderr?: string }>("/api/app/assets/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ package_path: packagePath }),
+    }),
 };
 
 /** 选择目录：桌面窗口里用原生对话框，浏览器里退回手输路径。 */
