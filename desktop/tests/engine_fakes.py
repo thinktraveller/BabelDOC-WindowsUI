@@ -55,7 +55,11 @@ def make_fake_runner(
         cancel_timeout: float = 10.0,
         terminate_timeout: float = 5.0,
         process_name: str = "fake-worker",
+        on_started=None,
+        on_finished=None,
     ) -> WorkerSummary:
+        if on_started is not None:
+            on_started(0)
         summary = WorkerSummary()
         job_id = str(request_dict.get("job_id"))
         output_dir = Path(request_dict["output_dir"])
@@ -158,5 +162,7 @@ def make_fake_runner(
         finally:
             if tracker is not None:
                 tracker.leave()
+            if on_finished is not None:
+                on_finished(0)
 
     return runner

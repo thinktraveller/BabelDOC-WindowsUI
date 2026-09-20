@@ -1,6 +1,7 @@
-import { Alert, Button, Layout, Space, Tabs, Tag, Typography } from "antd";
-import { useState } from "react";
+import { Alert, App as AntApp, Button, Layout, Modal, Space, Tabs, Tag, Typography } from "antd";
+import { useEffect, useState } from "react";
 
+import { api } from "./api";
 import SettingsDrawer from "./components/SettingsDrawer";
 import GlossaryPanel from "./components/GlossaryPanel";
 import TasksPanel from "./components/TasksPanel";
@@ -9,8 +10,71 @@ import WorkbenchPanel from "./components/WorkbenchPanel";
 const { Header, Content } = Layout;
 
 export default function App() {
+  const { message } = AntApp.useApp();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("workbench");
+  const [closingOpen, setClosingOpen] = useState(false);
+  const [closingBusy, setClosingBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    (window as unknown as { __WORKBENCH_ON_CLOSE__?: () => void }).__WORKBENCH_ON_CLOSE__ =
+      () => setClosingOpen(true);
+    return () => {
+      delete (window as unknown as { __WORKBENCH_ON_CLOSE__?: () => void })
+        .__WORKBENCH_ON_CLOSE__;
+    };
+  }, []);
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const finishClose = () => {
+    const bridge = (
+      window as unknown as { pywebview?: { api?: { finish_close?: () => void } } }
+    ).pywebview?.api;
+    if (bridge?.finish_close) {
+      bridge.finish_close();
+      return;
+    }
+    setClosingOpen(false);
+    setClosingBusy(null);
+    message.info("浏览器模式下请手动关闭标签页。");
+  };
+
+  const waitForIdle = async () => {
+    for (let attempt = 0; attempt < 3600; attempt += 1) {
+      const status = await api.appStatus();
+      if (status.active_count === 0) {
+        return;
+      }
+      await sleep(2000);
+    }
+  };
+
+  const handleWaitAndClose = async () => {
+    setClosingBusy("wait");
+    await waitForIdle();
+    finishClose();
+  };
+
+  const handleCancelAndClose = async () => {
+    setClosingBusy("cancel");
+    const status = await api.appStatus();
+    for (const task of status.active_tasks) {
+      try {
+        await api.cancelTask(task.id);
+      } catch {
+        /* 任务可能刚好结束 */
+      }
+    }
+    await waitForIdle();
+    finishClose();
+  };
+
+  const handleForceClose = async () => {
+    setClosingBusy("force");
+    await api.forceInterrupt();
+    finishClose();
+  };
 
   return (
     <Layout className="app-layout">
@@ -52,6 +116,37 @@ export default function App() {
         />
       </Content>
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Modal
+        open={closingOpen}
+        title="还有任务正在运行"
+        closable={false}
+        maskClosable={false}
+        footer={[
+          <Button key="wait" loading={closingBusy === "wait"} onClick={handleWaitAndClose}>
+            等待完成
+          </Button>,
+          <Button
+            key="cancel"
+            loading={closingBusy === "cancel"}
+            onClick={handleCancelAndClose}
+          >
+            取消任务并退出
+          </Button>,
+          <Button
+            key="force"
+            danger
+            loading={closingBusy === "force"}
+            onClick={handleForceClose}
+          >
+            结束并标记为已中断
+          </Button>,
+        ]}
+      >
+        <p>请选择退出方式；选择“结束并标记为已中断”后，任务不会保留断点，需要重新执行。</p>
+        <p className="hint-text">
+          取消表示停止当前任务，不是暂停；中断后的任务可在任务列表中重新执行。
+        </p>
+      </Modal>
     </Layout>
   );
 }

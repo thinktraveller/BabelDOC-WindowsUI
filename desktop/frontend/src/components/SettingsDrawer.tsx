@@ -151,6 +151,18 @@ export default function SettingsDrawer({ open, onClose }: Props) {
     onError: (error) => message.error(describeError(error)),
   });
 
+  const diagnosticsMutation = useMutation({
+    mutationFn: () => api.exportDiagnostics(null),
+    onSuccess: (result) => {
+      if (result.findings.length) {
+        message.warning(`诊断包已导出，但自检发现可疑内容：${result.findings.join("；")}`);
+      } else {
+        message.success(`诊断包已导出：${result.path}`);
+      }
+    },
+    onError: (error) => message.error(describeError(error)),
+  });
+
   const columns: ColumnsType<ApiProfile> = [
     {
       title: "名称",
@@ -266,6 +278,14 @@ export default function SettingsDrawer({ open, onClose }: Props) {
       <span className="hint-text">
         保留天数设为 0 表示不自动清理；成果文件只会由你手动删除。
       </span>
+      <div style={{ marginTop: 8 }}>
+        <Button loading={diagnosticsMutation.isPending} onClick={() => diagnosticsMutation.mutate()}>
+          导出诊断包
+        </Button>
+        <span className="hint-text" style={{ marginLeft: 8 }}>
+          包含版本信息、任务参数快照与脱敏日志，不含 API Key 与文档正文。
+        </span>
+      </div>
 
       <Typography.Title level={5}>API 配置</Typography.Title>
       <Table

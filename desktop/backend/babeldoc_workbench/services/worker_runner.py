@@ -49,6 +49,8 @@ def run_worker_process(
     terminate_timeout: float = DEFAULT_TERMINATE_TIMEOUT,
     poll_interval: float = DEFAULT_POLL_INTERVAL,
     process_name: str = "babeldoc-worker",
+    on_started: Callable[[int], None] | None = None,
+    on_finished: Callable[[int], None] | None = None,
 ) -> WorkerSummary:
     """运行一次任务；``cancel_event`` 置位后先发取消消息，超时再终止进程。"""
     summary = WorkerSummary()
@@ -61,6 +63,11 @@ def run_worker_process(
     )
     process.start()
     child_conn.close()
+    if on_started is not None:
+        try:
+            on_started(int(process.pid or 0))
+        except Exception:  # noqa: BLE001 - 登记失败不影响任务
+            logger.warning("登记工作进程失败", exc_info=True)
 
     cancel_sent = False
     cancel_deadline = 0.0
@@ -99,6 +106,11 @@ def run_worker_process(
     finally:
         process.join(terminate_timeout)
         summary.exit_code = process.exitcode
+        if on_finished is not None:
+            try:
+                on_finished(int(process.pid or 0))
+            except Exception:  # noqa: BLE001
+                logger.warning("注销工作进程失败", exc_info=True)
         try:
             parent_conn.close()
         except OSError:

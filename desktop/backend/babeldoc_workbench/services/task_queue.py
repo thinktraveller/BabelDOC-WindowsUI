@@ -29,7 +29,12 @@ from babeldoc_workbench.models import (
     TASK_STATUS_RUNNING,
     Task,
 )
-from babeldoc_workbench.services import api_profiles, glossaries, task_store
+from babeldoc_workbench.services import (
+    api_profiles,
+    glossaries,
+    task_store,
+    worker_registry,
+)
 from babeldoc_workbench.services.params import to_engine_fields
 from babeldoc_workbench.services.worker_runner import (
     DEFAULT_CANCEL_TIMEOUT,
@@ -251,6 +256,8 @@ class TaskQueue:
             cancel_event=cancel_event,
             cancel_timeout=self.config.cancel_timeout,
             process_name=f"babeldoc-task-{task.id}",
+            on_started=worker_registry.register,
+            on_finished=worker_registry.unregister,
         )
 
         if summary.progress is not None:

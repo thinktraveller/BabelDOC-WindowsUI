@@ -108,6 +108,7 @@ class DesktopBridge:
 
     def __init__(self) -> None:
         self.window = None
+        self.allow_close = None
 
     def choose_directory(self, initial: str | None = None) -> str | None:
         try:
@@ -128,6 +129,14 @@ class DesktopBridge:
         if isinstance(result, (list, tuple)):
             return str(result[0]) if result else None
         return str(result)
+
+    def finish_close(self) -> bool:
+        """页面已完成关闭选择，允许窗口真正关闭。"""
+        if self.allow_close is not None:
+            self.allow_close()
+        if self.window is not None:
+            self.window.destroy()
+        return True
 
 
 INDEX_HTML = """<!doctype html>
@@ -242,6 +251,7 @@ def create_app(
     from babeldoc_workbench.api.files import router as files_router
     from babeldoc_workbench.api.tasks import router as tasks_router
     from babeldoc_workbench.api.glossary import router as glossary_router
+    from babeldoc_workbench.api.app_control import router as app_router
 
     app = FastAPI(title="BabelDOC Workbench", docs_url=None, redoc_url=None)
     light_provider = light_checks_provider or _cache_light_checks()
@@ -249,6 +259,7 @@ def create_app(
     app.include_router(files_router)
     app.include_router(tasks_router)
     app.include_router(glossary_router)
+    app.include_router(app_router)
 
     dist_dir = Path(frontend_dir) if frontend_dir is not None else frontend_dist_dir()
     if dist_dir is not None and not (dist_dir / "index.html").is_file():
@@ -437,6 +448,15 @@ def run_app(argv: Sequence[str] | None = None) -> int:
     set_current_paths(paths)
     log_file = setup_logging(paths.logs)
     logger.info("应用启动：数据目录 %s，日志 %s", paths.root, log_file)
+    from babeldoc_workbench.services import recovery
+
+    recovered = recovery.recover_on_startup()
+    if recovered["interrupted_tasks"]:
+        logger.warning(
+            "启动恢复：%s 个任务被标记为 interrupted，%s 个残留工作进程被清理",
+            len(recovered["interrupted_tasks"]),
+            len(recovered["orphan_workers"]),
+        )
 
     # 单实例：已有实例时不再开第二个窗口
     lock = SingleInstance(lock_dir=paths.tmp)
@@ -485,6 +505,34 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         bridge = DesktopBridge()
         window = webview.create_window(SELF_CHECK_TITLE, url, js_api=bridge)
         bridge.window = window
+        closing_state = {"decided": False}
+
+        def _allow_close() -> None:
+            closing_state["decided"] = True
+
+        bridge.allow_close = _allow_close
+
+        def on_closing() -> bool:
+            """有任务在运行时先让界面询问用户，不静默杀进程。"""
+            if closing_state["decided"]:
+                return True
+            try:
+                active = recovery.active_tasks()
+            except Exception:  # pragma: no cover - 数据库异常时直接关闭
+                return True
+            if not active:
+                return True
+            try:
+                window.evaluate_js(
+                    "window.__WORKBENCH_ON_CLOSE__ && window.__WORKBENCH_ON_CLOSE__();"
+                )
+            except Exception:  # pragma: no cover - 页面不可用时直接关闭
+                logger.warning("无法向页面发送关闭询问，直接关闭窗口")
+                return True
+            logger.info("有 %s 个任务在运行，等待界面确认关闭方式", len(active))
+            return False
+
+        window.events.closing += on_closing
 
         def inject_token() -> None:
             """把令牌注入页面内存（不经过 URL、不落盘）。"""

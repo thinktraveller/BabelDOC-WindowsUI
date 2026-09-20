@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -15,9 +16,34 @@ from peewee import SqliteDatabase
 logger = logging.getLogger(__name__)
 
 DB_FILENAME = "workbench.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 database = SqliteDatabase(None)
+MIGRATIONS: dict[int, Callable[[], None]] = {}
+
+
+def migration(version: int):
+    """注册某一版本的迁移函数。"""
+
+    def decorator(func: Callable[[], None]) -> Callable[[], None]:
+        MIGRATIONS[version] = func
+        return func
+
+    return decorator
+
+
+@migration(2)
+def _migrate_glossary_tables() -> None:
+    """v1 → v2：升级前创建的库没有术语表相关表与唯一索引，这里补齐。"""
+    from babeldoc_workbench import models
+
+    database.create_tables(
+        (models.Glossary, models.GlossaryEntry, models.GlossaryVersion), safe=True
+    )
+    database.execute_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS glossary_entries_key "
+        "ON glossary_entries (glossary_id, source, tgt_lng)"
+    )
 
 
 def db_path(app_db_dir: Path) -> Path:
@@ -43,6 +69,7 @@ def init(app_db_dir: Path) -> SqliteDatabase:
 
     database.create_tables(models.ALL_TABLES, safe=True)
     _write_schema_version()
+    migrate()
     logger.info("应用数据库就绪：%s", path)
     return database
 
@@ -60,6 +87,33 @@ def schema_version() -> str:
 
     row = AppSetting.get_or_none(AppSetting.key == "schema_version")
     return row.value if row else ""
+
+
+def _set_schema_version(value: int) -> None:
+    from babeldoc_workbench.models import AppSetting
+
+    row, created = AppSetting.get_or_create(
+        key="schema_version", defaults={"value": str(value)}
+    )
+    if not created:
+        row.value = str(value)
+        row.save()
+
+
+def migrate() -> list[int]:
+    """按 ``schema_version`` 顺序执行未应用的迁移，返回本次应用的版本列表。"""
+    stored = schema_version()
+    current = int(stored) if str(stored).isdigit() else SCHEMA_VERSION
+    applied: list[int] = []
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        migration_func = MIGRATIONS.get(version)
+        if migration_func is not None:
+            logger.info("执行数据库迁移 → v%s", version)
+            migration_func()
+        applied.append(version)
+    if applied:
+        _set_schema_version(SCHEMA_VERSION)
+    return applied
 
 
 def close() -> None:

@@ -290,6 +290,27 @@ export const api = {
     );
   },
   glossaryExportUrl: (glossaryId: number) => `/api/glossaries/${glossaryId}/export`,
+
+  appStatus: () =>
+    request<{
+      active_count: number;
+      active_tasks: { id: number; status: string; stage: string | null }[];
+    }>("/api/app/status"),
+  forceInterrupt: () =>
+    request<{ interrupted: { task_id: number }[] }>("/api/app/force-interrupt", {
+      method: "POST",
+    }),
+  exportDiagnostics: (destinationDir?: string | null) =>
+    request<{
+      path: string;
+      size: number;
+      entries: string[];
+      findings: string[];
+    }>("/api/app/diagnostics", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ destination_dir: destinationDir ?? null }),
+    }),
 };
 
 /** 选择目录：桌面窗口里用原生对话框，浏览器里退回手输路径。 */

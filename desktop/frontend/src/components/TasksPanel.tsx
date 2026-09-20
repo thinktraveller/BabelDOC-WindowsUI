@@ -296,6 +296,9 @@ export default function TasksPanel() {
                 <Tag color={STATUS_COLORS[detail.status]}>
                   {STATUS_LABELS[detail.status] ?? detail.status}
                 </Tag>
+                {detail.status === "interrupted" && (
+                  <span className="hint-text"> 成果可能不完整，可重新执行</span>
+                )}
               </Descriptions.Item>
               <Descriptions.Item label="当前阶段">
                 {live.stage ?? detail.stage_label ?? "—"}
