@@ -1,35 +1,86 @@
-"""最小应用装配：环境自检服务 + 桌面窗口（步骤 2 范围）。
+"""应用服务装配：本地回环服务、会话令牌与来源校验、自检页面与桌面窗口。
 
-本步只解决“冻结后能否启动、能否加载原生依赖、能否用 spawn 起工作进程”，因此：
+安全边界（计划书步骤 3）：
 
-- 服务只监听回环地址，端口由系统分配；
-- 页面只渲染环境自检结果；
-- 会话令牌、来源校验、单实例锁、应用目录与凭据管理属于步骤 3，本步不实现。
+- 只监听 ``127.0.0.1``，端口由系统分配，不固定端口；
+- 每次启动生成一次性会话令牌，接口要求请求头 ``X-Workbench-Token``；
+- 校验 ``Host`` 与 ``Origin``，两者都必须是本机回环来源；
+- 令牌只注入窗口内存，不写进 URL、日志或磁盘。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import socket
 import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
+from babeldoc_workbench import __version__ as APP_VERSION
+from babeldoc_workbench import security
 from babeldoc_workbench.engine.selfcheck import (
     STATUS_FAIL,
     CheckResult,
     format_report,
     overall_status,
     run_all_checks,
+    run_light_checks,
 )
+from babeldoc_workbench.logging_setup import setup_logging
+from babeldoc_workbench.settings import (
+    AppDataDirectoryError,
+    AppPaths,
+    ensure_app_dirs,
+)
+from babeldoc_workbench.single_instance import SingleInstance, activate_existing_window
+
+logger = logging.getLogger(__name__)
 
 HOST = "127.0.0.1"
-WINDOW_TITLE = "BabelDOC 工作台 · 环境自检"
+WINDOW_TITLE = "BabelDOC 工作台"
+SELF_CHECK_TITLE = "BabelDOC 工作台 · 环境自检"
 SELF_CHECK_REPORT_NAME = "babeldoc-selfcheck-report.txt"
+TOKEN_EXEMPT_PATHS = frozenset({"/", "/favicon.ico"})
+
+
+def engine_version() -> str:
+    try:
+        from babeldoc.const import __version__ as version
+
+        return str(version)
+    except Exception:  # pragma: no cover - 引擎不可导入时
+        return "unknown"
+
+
+@dataclass
+class SessionInfo:
+    """一次运行的会话信息；``token`` 不进入日志、URL 与磁盘。"""
+
+    token: str
+    port: int = 0
+    app_version: str = APP_VERSION
+    engine_version: str = field(default_factory=engine_version)
+    started_at: str = field(
+        default_factory=lambda: datetime.now().isoformat(timespec="seconds")
+    )
+
+    def public_dict(self) -> dict:
+        return {
+            "app_version": self.app_version,
+            "engine_version": self.engine_version,
+            "port": self.port,
+            "started_at": self.started_at,
+            "token_required": True,
+            "token_header": security.TOKEN_HEADER,
+        }
+
 
 INDEX_HTML = """<!doctype html>
 <html lang="zh-CN">
@@ -56,17 +107,29 @@ INDEX_HTML = """<!doctype html>
 <body>
   <h1>环境自检</h1>
   <p class="sub">检查项来自工作进程实测：运行时、ONNX Runtime、模型与字体资源、子进程启动、WebView2 与数据目录。</p>
-  <div id="summary" class="warn">正在检查…（首次检查需数秒）</div>
+  <div id="summary" class="warn">正在检查…</div>
   <table>
-    <thead><tr><th style="width:150px">检查项</th><th style="width:80px">状态</th><th>详情</th></tr></thead>
+    <thead><tr><th style="width:150px">检查项</th><th style="width:90px">状态</th><th>详情</th></tr></thead>
     <tbody id="rows"><tr><td colspan="3">加载中…</td></tr></tbody>
   </table>
   <div id="error"></div>
   <script>
     const icons = { ok: "✅ 通过", warn: "⚠️ 注意", fail: "❌ 失败" };
-    async function load() {
+    function headers() {
+      const token = window.__WORKBENCH_TOKEN__;
+      return token ? { "X-Workbench-Token": token } : {};
+    }
+    async function load(attempt = 0) {
+      if (!window.__WORKBENCH_TOKEN__ && attempt < 40) {
+        document.getElementById("summary").textContent = "等待会话令牌…";
+        setTimeout(() => load(attempt + 1), 250);
+        return;
+      }
       try {
-        const response = await fetch("/api/selfcheck");
+        const response = await fetch("/api/selfcheck", { headers: headers() });
+        if (!response.ok) {
+          throw new Error("HTTP " + response.status + " " + (await response.text()));
+        }
         const data = await response.json();
         const summary = document.getElementById("summary");
         summary.className = data.overall;
@@ -90,7 +153,7 @@ INDEX_HTML = """<!doctype html>
 
 
 def _cache_checks() -> Callable[[bool], list[CheckResult]]:
-    """自检结果按``deep``缓存一次，避免页面轮询重复启动子进程。"""
+    """自检结果按 ``deep`` 缓存一次，避免页面轮询重复启动子进程。"""
     cache: dict[bool, list[CheckResult]] = {}
     lock = threading.Lock()
 
@@ -103,16 +166,67 @@ def _cache_checks() -> Callable[[bool], list[CheckResult]]:
     return provider
 
 
-def create_app(checks_provider: Callable[[bool], list[CheckResult]]):
-    """构造只提供自检页面的最小服务（步骤 3 会在此基础上扩展）。"""
-    from fastapi import FastAPI
-    from fastapi.responses import HTMLResponse
+def _cache_light_checks() -> Callable[[], list[CheckResult]]:
+    cache: list[list[CheckResult]] = []
+    lock = threading.Lock()
 
-    app = FastAPI(title="BabelDOC Workbench Self-Check", docs_url=None, redoc_url=None)
+    def provider() -> list[CheckResult]:
+        with lock:
+            if not cache:
+                cache.append(run_light_checks())
+            return cache[0]
+
+    return provider
+
+
+def create_app(
+    checks_provider: Callable[[bool], list[CheckResult]],
+    session: SessionInfo,
+    light_checks_provider: Callable[[], list[CheckResult]] | None = None,
+):
+    """构造工作台服务：先做 Host/Origin/令牌校验，再进入路由。"""
+    from fastapi import FastAPI, Request
+    from fastapi.responses import HTMLResponse, JSONResponse
+
+    app = FastAPI(title="BabelDOC Workbench", docs_url=None, redoc_url=None)
+    light_provider = light_checks_provider or _cache_light_checks()
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        if not security.check_host(request.headers.get("host"), session.port):
+            logger.warning("拒绝请求：Host=%s", request.headers.get("host"))
+            return JSONResponse(status_code=403, content={"detail": "非法的 Host 头"})
+        if not security.check_origin(request.headers.get("origin"), session.port):
+            logger.warning("拒绝请求：Origin=%s", request.headers.get("origin"))
+            return JSONResponse(status_code=403, content={"detail": "请求来源不被允许"})
+        if request.url.path not in TOKEN_EXEMPT_PATHS:
+            token = request.headers.get(security.TOKEN_HEADER)
+            if not security.tokens_equal(token, session.token):
+                logger.warning("拒绝请求：%s 缺少或携带无效会话令牌", request.url.path)
+                return JSONResponse(
+                    status_code=403, content={"detail": "缺少或无效的会话令牌"}
+                )
+        return await call_next(request)
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return INDEX_HTML
+
+    @app.get("/api/health")
+    def health() -> dict:
+        results = light_provider()
+        summary = {item.key: item.status for item in results}
+        return {
+            "status": "ok" if STATUS_FAIL not in summary.values() else "degraded",
+            "app_version": session.app_version,
+            "engine_version": session.engine_version,
+            "resources": summary,
+            "checks": [item.to_dict() for item in results],
+        }
+
+    @app.get("/api/session")
+    def session_info() -> dict:
+        return session.public_dict()
 
     @app.get("/api/selfcheck")
     def selfcheck(deep: bool = False) -> dict:
@@ -122,27 +236,24 @@ def create_app(checks_provider: Callable[[bool], list[CheckResult]]):
             "checks": [item.to_dict() for item in results],
         }
 
-    @app.get("/api/health")
-    def health() -> dict:
-        return {"status": "ok"}
-
     return app
 
 
-def serve_in_background(app) -> tuple[object, int]:
-    """在后台线程启动服务；端口由系统分配，只监听回环地址。"""
-    import uvicorn
-
+def bind_loopback_socket() -> tuple[socket.socket, int]:
+    """绑定一个空闲的回环端口；固定端口既易冲突也不符合“只监听本机”的假设。"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind((HOST, 0))
-    port = int(sock.getsockname()[1])
+    return sock, int(sock.getsockname()[1])
+
+
+def start_server(app, sock: socket.socket):
+    """在后台线程用已绑定的套接字启动服务。"""
+    import uvicorn
+
     config = uvicorn.Config(app, log_level="warning", access_log=False)
     server = uvicorn.Server(config)
     thread = threading.Thread(
-        target=server.run,
-        kwargs={"sockets": [sock]},
-        name="babeldoc-http",
-        daemon=True,
+        target=server.run, kwargs={"sockets": [sock]}, name="babeldoc-http", daemon=True
     )
     thread.start()
     deadline = time.monotonic() + 30.0
@@ -150,7 +261,32 @@ def serve_in_background(app) -> tuple[object, int]:
         if getattr(server, "started", False):
             break
         time.sleep(0.05)
-    return server, port
+    return server
+
+
+def serve_in_background(app) -> tuple[object, int]:
+    """便捷入口：绑定端口并启动服务（供脚本与测试使用）。"""
+    sock, port = bind_loopback_socket()
+    return start_server(app, sock), port
+
+
+def emit_report(text: str, report_file: str | None = None) -> str:
+    """输出报告；无控制台时（双击或 GUI 子系统）改为写报告文件。"""
+    if report_file:
+        try:
+            Path(report_file).write_text(text, encoding="utf-8")
+            return report_file
+        except OSError:
+            pass
+    if sys.stdout is not None:
+        print(text)
+        return ""
+    report_path = Path(tempfile.gettempdir()) / SELF_CHECK_REPORT_NAME
+    try:
+        report_path.write_text(text, encoding="utf-8")
+    except OSError:
+        return ""
+    return str(report_path)
 
 
 def run_self_check(args: argparse.Namespace) -> int:
@@ -170,60 +306,26 @@ def run_self_check(args: argparse.Namespace) -> int:
     return 1 if overall == STATUS_FAIL else 0
 
 
-def emit_report(text: str, report_file: str | None = None) -> str:
-    """输出自检报告；无控制台时（双击或 GUI 子系统）改为写报告文件。
-
-    ``report_file`` 用于自动验证：指定后总是写文件，便于脚本读取。
-    """
-    if report_file:
-        try:
-            Path(report_file).write_text(text, encoding="utf-8")
-            return report_file
-        except OSError:
-            pass
-    if sys.stdout is not None:
-        print(text)
-        return ""
-    report_path = Path(tempfile.gettempdir()) / SELF_CHECK_REPORT_NAME
-    try:
-        report_path.write_text(text, encoding="utf-8")
-    except OSError:
-        return ""
-    return str(report_path)
-
-
 def run_app(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="BabelDOC", description="BabelDOC 本地翻译工作台")
-    parser.add_argument(
-        "--self-check",
-        action="store_true",
-        help="只运行环境自检并退出（打包验证使用）",
+    parser = argparse.ArgumentParser(
+        prog="BabelDOC", description="BabelDOC 本地翻译工作台"
     )
+    parser.add_argument("--self-check", action="store_true", help="只运行环境自检并退出")
     parser.add_argument("--json", action="store_true", help="自检结果以 JSON 输出")
     parser.add_argument("--deep", action="store_true", help="自检时校验资源 sha3_256")
-    parser.add_argument(
-        "--report-file",
-        default=None,
-        help="把自检报告写入指定文件（无控制台环境下便于脚本读取）",
-    )
     parser.add_argument(
         "--skip-worker-probe", action="store_true", help="自检时跳过子进程启动检查"
     )
     parser.add_argument(
-        "--no-window",
-        action="store_true",
-        help="只启动本地服务，不打开窗口（开发与自动验证使用）",
+        "--no-window", action="store_true", help="只启动本地服务，不打开窗口"
     )
     parser.add_argument(
-        "--verify-job",
-        default=None,
-        help="开发/打包验证：在工作进程里跑一次离线翻译（跳过 LLM），参数为输入 PDF",
+        "--report-file", default=None, help="把报告写入指定文件（便于脚本读取）"
     )
     parser.add_argument(
-        "--verify-output",
-        default=None,
-        help="与 --verify-job 搭配的输出目录",
+        "--verify-job", default=None, help="打包验证：对给定 PDF 跑一次离线翻译"
     )
+    parser.add_argument("--verify-output", default=None, help="--verify-job 的输出目录")
     parser.add_argument("--lang-in", default="en", help="验证任务的源语言")
     parser.add_argument("--lang-out", default="zh", help="验证任务的目标语言")
     parser.add_argument(
@@ -236,37 +338,76 @@ def run_app(argv: Sequence[str] | None = None) -> int:
     if args.verify_job:
         return run_verify_job(args)
 
-    checks_provider = _cache_checks()
-    app = create_app(checks_provider)
-    server, port = serve_in_background(app)
-    url = f"http://{HOST}:{port}/"
-    print(f"自检服务已启动：{url}")
+    # 应用数据目录：不可写时明确报错，不退化为临时目录
+    try:
+        paths = ensure_app_dirs()
+    except AppDataDirectoryError as exc:
+        emit_report(f"❌ {exc}", args.report_file)
+        return 2
+    log_file = setup_logging(paths.logs)
+    logger.info("应用启动：数据目录 %s，日志 %s", paths.root, log_file)
 
-    if args.no_window:
-        try:
-            while True:
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            print("收到中断，正在退出")
-        finally:
-            server.should_exit = True
+    # 单实例：已有实例时不再开第二个窗口
+    lock = SingleInstance(lock_dir=paths.tmp)
+    if not lock.acquire():
+        activated = activate_existing_window(SELF_CHECK_TITLE) or activate_existing_window(
+            WINDOW_TITLE
+        )
+        message = "检测到已在运行的实例。"
+        message += "已尝试激活已有窗口。" if activated else "请查看已打开的窗口。"
+        logger.info(message)
+        emit_report(message, args.report_file)
         return 0
 
-    import webview
+    try:
+        session = SessionInfo(token=security.generate_session_token())
+        sock, port = bind_loopback_socket()
+        session.port = port
+        app = create_app(_cache_checks(), session)
+        server = start_server(app, sock)
+        url = f"http://{HOST}:{port}/"
+        logger.info("本地服务已启动：%s", url)
 
-    webview.create_window(WINDOW_TITLE, url)
-    webview.start()
-    server.should_exit = True
-    return 0
+        if args.no_window:
+            # 仅开发/自动验证模式会把端口与令牌打到控制台；日志文件中不记录令牌
+            print(f"url={url}")
+            print(f"token={session.token}")
+            print(f"app_dir={paths.root}")
+            try:
+                while True:
+                    time.sleep(0.5)
+            except KeyboardInterrupt:
+                pass
+            finally:
+                server.should_exit = True
+            return 0
+
+        import webview
+
+        window = webview.create_window(SELF_CHECK_TITLE, url)
+
+        def inject_token() -> None:
+            """把令牌注入页面内存（不经过 URL、不落盘）。"""
+            payload = json.dumps(session.token)
+            for _ in range(40):
+                time.sleep(0.25)
+                try:
+                    window.evaluate_js(f"window.__WORKBENCH_TOKEN__ = {payload};")
+                    return
+                except Exception:
+                    continue
+            logger.warning("未能把会话令牌注入页面")
+
+        webview.start(inject_token)
+        server.should_exit = True
+        return 0
+    finally:
+        lock.release()
 
 
 def run_verify_job(args: argparse.Namespace) -> int:
-    """打包验证：在工作进程里对给定 PDF 跑一次离线翻译，检查产物是否落盘。
-
-    该模式只用于验证“冻结后引擎能否真正产出文件”，跳过 LLM 翻译（不需要 API Key）。
-    """
+    """打包验证：在工作进程里对给定 PDF 跑一次离线翻译（跳过 LLM，不需要 Key）。"""
     import multiprocessing
-    import time
 
     from babeldoc_workbench.engine.protocol import (
         TERMINAL_EVENT_TYPES,
@@ -279,7 +420,9 @@ def run_verify_job(args: argparse.Namespace) -> int:
     if not input_path.is_file():
         emit_report(f"输入文件不存在：{input_path}", args.report_file)
         return 2
-    output_dir = Path(args.verify_output or (Path(tempfile.gettempdir()) / "babeldoc-verify-job"))
+    output_dir = Path(
+        args.verify_output or (Path(tempfile.gettempdir()) / "babeldoc-verify-job")
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     request = EngineJobRequest(
@@ -355,13 +498,11 @@ def run_verify_job(args: argparse.Namespace) -> int:
             ("单语 PDF", finish_payload.get("mono_pdf_path")),
             ("双语 PDF", finish_payload.get("dual_pdf_path")),
         ]
-        missing = [
-            name for name, path in produced if path and not Path(path).is_file()
-        ]
+        missing = [name for name, path in produced if path and not Path(path).is_file()]
         for name, path in produced:
             if path:
-                exists = "存在" if Path(path).is_file() else "缺失"
-                lines.append(f"{'✅' if exists == '存在' else '❌'} {name}：{path}（{exists}）")
+                exists = Path(path).is_file()
+                lines.append(f"{'✅' if exists else '❌'} {name}：{path}")
         ok = not missing
         if ok:
             lines.append("✅ 端到端（离线，跳过 LLM）通过")

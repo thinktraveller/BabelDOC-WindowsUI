@@ -448,6 +448,18 @@ def run_all_checks(
     return results
 
 
+def run_light_checks(
+    *, cache_root: Path | None = None, app_data_dir: Path | None = None
+) -> list[CheckResult]:
+    """轻量检查：不启动子进程、不做磁盘哈希，用于 ``/api/health`` 的资源状态摘要。"""
+    return run_all_checks(
+        deep=False,
+        cache_root=cache_root,
+        app_data_dir=app_data_dir,
+        include_worker_probe=False,
+    )
+
+
 def format_report(results: Sequence[CheckResult]) -> str:
     icons = {STATUS_OK: "✅", STATUS_WARN: "⚠️", STATUS_FAIL: "❌"}
     lines = ["BabelDOC 工作台环境自检", "-" * 60]
