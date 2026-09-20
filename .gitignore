@@ -63,3 +63,6 @@ temp.jpg
 /desktop/frontend/dist/
 /desktop/frontend/.env.local
 
+# 前端工程配置是源码（仓库的 *.json 规则会误伤，这里精确放行）
+!/desktop/frontend/*.json
+
