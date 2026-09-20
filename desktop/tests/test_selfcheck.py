@@ -10,6 +10,7 @@ from babeldoc_workbench.engine.selfcheck import (
     STATUS_WARN,
     CheckResult,
     check_assets_inventory,
+    check_credential_store,
     check_directory_writable,
     check_platform,
     check_python_runtime,
@@ -98,3 +99,17 @@ def test_overall_status_precedence() -> None:
     assert overall_status([ok]) == STATUS_OK
     assert overall_status([ok, warn]) == STATUS_WARN
     assert overall_status([ok, warn, fail]) == STATUS_FAIL
+
+
+def test_credential_store_check_reports_status(monkeypatch) -> None:
+    from babeldoc_workbench import security
+
+    monkeypatch.setattr(security, "credentials_available", lambda: (True, "fake"))
+    result = check_credential_store()
+    assert result.status == STATUS_OK
+    assert "fake" in result.detail
+
+    monkeypatch.setattr(security, "credentials_available", lambda: (False, "boom"))
+    result = check_credential_store()
+    assert result.status == STATUS_WARN
+    assert result.hint

@@ -188,8 +188,11 @@ def create_app(
     from fastapi import FastAPI, Request
     from fastapi.responses import HTMLResponse, JSONResponse
 
+    from babeldoc_workbench.api.settings import router as settings_router
+
     app = FastAPI(title="BabelDOC Workbench", docs_url=None, redoc_url=None)
     light_provider = light_checks_provider or _cache_light_checks()
+    app.include_router(settings_router)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -344,6 +347,9 @@ def run_app(argv: Sequence[str] | None = None) -> int:
     except AppDataDirectoryError as exc:
         emit_report(f"❌ {exc}", args.report_file)
         return 2
+    from babeldoc_workbench import db
+
+    db.init(paths.db)
     log_file = setup_logging(paths.logs)
     logger.info("应用启动：数据目录 %s，日志 %s", paths.root, log_file)
 

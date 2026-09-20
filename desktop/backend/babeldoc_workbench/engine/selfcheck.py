@@ -329,6 +329,33 @@ def check_webview2() -> CheckResult:
     )
 
 
+def check_credential_store() -> CheckResult:
+    """检查系统凭据服务是否可用；不可用时只警告（用户仍可查看文件，但不能保存 Key）。"""
+    try:
+        from babeldoc_workbench.security import credentials_available
+
+        available, detail = credentials_available()
+    except Exception as exc:  # pragma: no cover - 仅在导入失败时
+        return CheckResult(
+            "credential_store",
+            "系统凭据存储",
+            STATUS_WARN,
+            f"无法检测：{type(exc).__name__}: {exc}",
+            hint="API Key 将无法保存到系统凭据存储",
+        )
+    if available:
+        return CheckResult(
+            "credential_store", "系统凭据存储", STATUS_OK, f"可用（{detail}）"
+        )
+    return CheckResult(
+        "credential_store",
+        "系统凭据存储",
+        STATUS_WARN,
+        f"不可用：{detail}",
+        hint="保存 API Key 时会报错；请检查系统凭据管理器是否可用，不要改用明文保存",
+    )
+
+
 def _probe_worker_entry(conn) -> None:
     """工作进程探测入口：验证 spawn 后子进程能否导入引擎。"""
     payload: dict[str, Any] = {"ok": False, "detail": "", "error": None}
@@ -443,6 +470,7 @@ def run_all_checks(
         )
     )
     results.append(check_webview2())
+    results.append(check_credential_store())
     if include_worker_probe:
         results.append(probe_worker_spawn())
     return results

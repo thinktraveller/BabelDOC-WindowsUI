@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import socket
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -38,9 +39,13 @@ def request(
     *,
     headers: dict[str, str] | None = None,
     timeout: float = 60.0,
+    data: bytes | None = None,
+    method: str | None = None,
 ) -> tuple[int, str]:
     """发起请求并返回 (状态码, 响应体)；HTTP 错误也作为结果返回。"""
-    req = urllib.request.Request(url, headers=headers or {})
+    req = urllib.request.Request(
+        url, headers=headers or {}, data=data, method=method
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", "replace")
@@ -61,6 +66,11 @@ def non_loopback_addresses() -> list[str]:
 
 
 def main() -> int:
+    # 使用临时应用库，避免影响真实的应用数据目录
+    from babeldoc_workbench import db
+
+    temp_root = Path(tempfile.mkdtemp(prefix="babeldoc-verify-"))
+    db.init(temp_root / "db")
     session = SessionInfo(token=security.generate_session_token())
     server, port = serve_in_background(create_app(_provider(), session))
     session.port = port  # create_app 之后端口才确定，中间件读取的是同一个对象
@@ -129,6 +139,45 @@ def main() -> int:
         ("首页免令牌可加载", status == 200 and "环境自检" in body, f"{status} {len(body)} 字符")
     )
 
+    headers = {security.TOKEN_HEADER: session.token}
+    status, body = request(f"{base}/api/settings/params/schema", headers=headers)
+    schema = json.loads(body) if status == 200 else {}
+    keys = {item["key"] for item in schema.get("items", [])}
+    checks.append(
+        (
+            "参数定义接口可用且不含已弃用项",
+            status == 200 and "lang_in" in keys and "table_model" not in keys,
+            f"{status} 参数项 {len(keys)} 个",
+        )
+    )
+
+    status, body = request(f"{base}/api/settings/api-profiles", headers=headers)
+    checks.append(
+        (
+            "API 配置列表接口可用（不返回明文 Key）",
+            status == 200 and "items" in json.loads(body) and "sk-" not in body,
+            f"{status} keys={list(json.loads(body).keys()) if status == 200 else body[:40]}",
+        )
+    )
+
+    status, body = request(
+        f"{base}/api/settings/params/validate",
+        headers={**headers, "Content-Type": "application/json"},
+        data=json.dumps(
+            {"params": {"pages": "5-2", "no_mono": True, "no_dual": True}}
+        ).encode("utf-8"),
+        method="POST",
+    )
+    payload = json.loads(body) if status == 200 else {}
+    errors = payload.get("errors", {})
+    checks.append(
+        (
+            "参数校验接口拦下非法组合",
+            status == 200 and payload.get("ok") is False and "pages" in errors,
+            f"{status} errors={sorted(errors)}",
+        )
+    )
+
     exposed: list[str] = []
     for address in non_loopback_addresses():
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -149,6 +198,7 @@ def main() -> int:
     )
 
     server.should_exit = True
+    db.close()
 
     print("步骤 3 服务安全边界验证")
     print("-" * 60)

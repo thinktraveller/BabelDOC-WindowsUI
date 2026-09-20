@@ -43,6 +43,16 @@ try:
 except Exception:
     pass
 
+# keyring 通过 entry point 发现 Windows 凭据后端，冻结后同样需要 dist-info
+try:
+    datas += copy_metadata("keyring")
+    keyring_datas, keyring_binaries, keyring_hidden = collect_all("keyring")
+    datas += keyring_datas
+    binaries += keyring_binaries
+    hiddenimports += keyring_hidden
+except Exception:
+    pass
+
 # 其他含原生扩展的依赖，显式收集以降低漏 DLL 的概率
 for package in (
     "Levenshtein",
