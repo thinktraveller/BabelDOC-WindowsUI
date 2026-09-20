@@ -136,7 +136,11 @@ def main() -> int:
 
     status, body = request(base + "/")
     checks.append(
-        ("首页免令牌可加载", status == 200 and "环境自检" in body, f"{status} {len(body)} 字符")
+        (
+            "首页免令牌可加载（工作台页面或自检页）",
+            status == 200 and ("环境自检" in body or "BabelDOC 工作台" in body),
+            f"{status} {len(body)} 字符",
+        )
     )
 
     headers = {security.TOKEN_HEADER: session.token}
@@ -177,6 +181,27 @@ def main() -> int:
             f"{status} errors={sorted(errors)}",
         )
     )
+
+    status, body = request(base + "/")
+    built_ui = "assets/" in body and "BabelDOC 工作台" in body
+    checks.append(
+        (
+            "首页返回前端构建产物（未构建时回退自检页）",
+            status == 200 and (built_ui or "环境自检" in body),
+            f"{status} 前端产物={'是' if built_ui else '否（回退自检页）'}",
+        )
+    )
+    if built_ui:
+        asset_path = body.split('src="')[1].split('"')[0] if 'src="' in body else ""
+        if asset_path.startswith("/"):
+            asset_status, asset_body = request(base + asset_path)
+            checks.append(
+                (
+                    "前端静态资源免令牌可访问",
+                    asset_status == 200 and len(asset_body) > 1000,
+                    f"{asset_path} → {asset_status}（{len(asset_body)} 字符）",
+                )
+            )
 
     exposed: list[str] = []
     for address in non_loopback_addresses():
