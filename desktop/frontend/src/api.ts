@@ -176,8 +176,71 @@ export const api = {
     request<Record<string, unknown>>(`/api/tasks/${id}/cancel`, { method: "POST" }),
   rerunTask: (id: number) =>
     request<TaskInfo>(`/api/tasks/${id}/rerun`, { method: "POST" }),
-  deleteTask: (id: number) => request<void>(`/api/tasks/${id}`, { method: "DELETE" }),
+  deleteTask: (id: number, deleteFiles = false) =>
+    request<void>(`/api/tasks/${id}?delete_files=${deleteFiles ? "true" : "false"}`, {
+      method: "DELETE",
+    }),
+  taskFiles: (id: number) =>
+    request<{
+      task_id: number;
+      root: string;
+      total_size: number;
+      items: { name: string; path: string; exists: boolean; size: number }[];
+    }>(`/api/tasks/${id}/files`),
+  cleanupTask: (id: number) =>
+    request<{ removed: string[]; freed_bytes: number }>(`/api/tasks/${id}/cleanup`, {
+      method: "POST",
+    }),
+  deleteTaskFiles: (id: number) =>
+    request<{ removed: string[]; freed_bytes: number }>(`/api/tasks/${id}/files`, {
+      method: "DELETE",
+    }),
+  revealTask: (id: number) =>
+    request<{ path: string }>(`/api/tasks/${id}/reveal`, { method: "POST" }),
+  openOutput: (id: number, kind: string) =>
+    request<{ path: string }>(`/api/tasks/${id}/outputs/${kind}/open`, { method: "POST" }),
+  saveOutputAs: (id: number, kind: string, targetDir: string) =>
+    request<{ target: string; size: number }>(
+      `/api/tasks/${id}/outputs/${kind}/save-as`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_dir: targetDir }),
+      },
+    ),
+
+  getAppSettings: () =>
+    request<{ default_output_dir: string; retention_days: number; log_level: string }>(
+      "/api/settings/app",
+    ),
+  updateAppSettings: (patch: Record<string, unknown>) =>
+    request<{ default_output_dir: string; retention_days: number; log_level: string }>(
+      "/api/settings/app",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    ),
 };
+
+/** 选择目录：桌面窗口里用原生对话框，浏览器里退回手输路径。 */
+export async function chooseDirectory(initial?: string | null): Promise<string | null> {
+  const bridge = (
+    window as unknown as {
+      pywebview?: { api?: { choose_directory?: (value: string | null) => Promise<string | null> } };
+    }
+  ).pywebview?.api;
+  if (bridge?.choose_directory) {
+    try {
+      return await bridge.choose_directory(initial ?? null);
+    } catch {
+      /* 对话框失败时退回手输 */
+    }
+  }
+  const manual = window.prompt("请输入目录的完整路径：", initial ?? "");
+  return manual && manual.trim() ? manual.trim() : null;
+}
 
 export interface TaskStreamHandlers {
   onEvent?: (event: { type: string; payload: Record<string, unknown> }) => void;

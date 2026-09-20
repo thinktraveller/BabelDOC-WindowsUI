@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from babeldoc_workbench import security
-from babeldoc_workbench.services import api_profiles, params, presets
+from babeldoc_workbench.services import api_profiles, app_settings, params, presets
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,28 @@ class ValidatePayload(BaseModel):
 class PresetPayload(BaseModel):
     name: str
     params: dict[str, Any]
+
+
+class AppSettingsPayload(BaseModel):
+    default_output_dir: str | None = None
+    retention_days: int | None = None
+    log_level: str | None = None
+
+
+@router.get("/app")
+def read_app_settings() -> dict[str, Any]:
+    return app_settings.get_settings()
+
+
+@router.put("/app")
+def update_app_settings(payload: AppSettingsPayload) -> dict[str, Any]:
+    patch = {key: value for key, value in payload.model_dump().items() if value is not None}
+    if not patch:
+        return app_settings.get_settings()
+    try:
+        return app_settings.update_settings(patch)
+    except app_settings.SettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _profile_error(exc: Exception) -> HTTPException:

@@ -17,7 +17,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 
-import { api } from "../api";
+import { api, chooseDirectory } from "../api";
 import type { ApiProfile } from "../types";
 import { describeError } from "./WorkbenchPanel";
 
@@ -40,6 +40,11 @@ export default function SettingsDrawer({ open, onClose }: Props) {
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
   const [form] = Form.useForm<ProfileFormValues>();
+  const [appForm] = Form.useForm<{
+    default_output_dir: string;
+    retention_days: number;
+    log_level: string;
+  }>();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
 
@@ -53,6 +58,17 @@ export default function SettingsDrawer({ open, onClose }: Props) {
     queryFn: api.listPresets,
     enabled: open,
   });
+  const appSettingsQuery = useQuery({
+    queryKey: ["app-settings"],
+    queryFn: api.getAppSettings,
+    enabled: open,
+  });
+
+  useEffect(() => {
+    if (appSettingsQuery.data) {
+      appForm.setFieldsValue(appSettingsQuery.data);
+    }
+  }, [appSettingsQuery.data, appForm]);
 
   useEffect(() => {
     if (!open) {
@@ -123,6 +139,15 @@ export default function SettingsDrawer({ open, onClose }: Props) {
   const deletePresetMutation = useMutation({
     mutationFn: api.deletePreset,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["presets"] }),
+    onError: (error) => message.error(describeError(error)),
+  });
+
+  const saveAppSettingsMutation = useMutation({
+    mutationFn: (values: Record<string, unknown>) => api.updateAppSettings(values),
+    onSuccess: () => {
+      message.success("全局设置已保存");
+      queryClient.invalidateQueries({ queryKey: ["app-settings"] });
+    },
     onError: (error) => message.error(describeError(error)),
   });
 
@@ -198,6 +223,50 @@ export default function SettingsDrawer({ open, onClose }: Props) {
           description="当前无法保存 API Key。请检查 Windows 凭据管理器后重试；应用不会把 Key 明文保存到文件。"
         />
       )}
+      <Typography.Title level={5}>全局设置</Typography.Title>
+      <Form
+        form={appForm}
+        layout="inline"
+        onFinish={(values) => saveAppSettingsMutation.mutate(values)}
+        style={{ rowGap: 8, marginBottom: 8 }}
+      >
+        <Form.Item name="default_output_dir" label="默认输出目录">
+          <Input style={{ width: 320 }} placeholder="留空表示每次另存时再选择" />
+        </Form.Item>
+        <Form.Item>
+          <Button
+            onClick={async () => {
+              const directory = await chooseDirectory(appForm.getFieldValue("default_output_dir"));
+              if (directory) {
+                appForm.setFieldValue("default_output_dir", directory);
+              }
+            }}
+          >
+            选择目录
+          </Button>
+        </Form.Item>
+        <Form.Item name="retention_days" label="成果保留天数">
+          <Input type="number" min={0} style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item name="log_level" label="日志级别">
+          <Select
+            style={{ width: 140 }}
+            options={["DEBUG", "INFO", "WARNING", "ERROR"].map((value) => ({
+              value,
+              label: value,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" loading={saveAppSettingsMutation.isPending}>
+            保存设置
+          </Button>
+        </Form.Item>
+      </Form>
+      <span className="hint-text">
+        保留天数设为 0 表示不自动清理；成果文件只会由你手动删除。
+      </span>
+
       <Typography.Title level={5}>API 配置</Typography.Title>
       <Table
         rowKey="id"

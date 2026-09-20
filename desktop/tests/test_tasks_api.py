@@ -313,3 +313,100 @@ def test_sse_live_stream_and_cancel(workbench_db, fake_keyring, tmp_path: Path, 
         queue.stop()
         # 服务线程退出后再结束测试
         time.sleep(0.5)
+
+
+def create_finished_task(client: TestClient, tmp_path: Path, profile) -> dict:
+    staged = import_pdf(client, tmp_path)
+    task = client.post(
+        "/api/tasks",
+        json={"file_ids": [staged["id"]], "api_profile_id": profile["id"], "params": {}},
+    ).json()["items"][0]
+    finished = wait_for_terminal(client, task["id"])
+    assert finished["status"] == "succeeded"
+    return finished
+
+
+def test_task_files_and_cleanup_keep_inputs(client: TestClient, tmp_path: Path, profile) -> None:
+    finished = create_finished_task(client, tmp_path, profile)
+    described = client.get(f"/api/tasks/{finished['id']}/files").json()
+    by_name = {item["name"]: item for item in described["items"]}
+    assert by_name["input"]["size"] > 0
+    assert by_name["output"]["size"] > 0
+
+    cleanup = client.post(f"/api/tasks/{finished['id']}/cleanup")
+    assert cleanup.status_code == 200
+    assert cleanup.json()["removed"]
+    after = client.get(f"/api/tasks/{finished['id']}/files").json()
+    after_by_name = {item["name"]: item for item in after["items"]}
+    assert after_by_name["work"]["exists"] is False
+    assert after_by_name["input"]["exists"] is True, "清理临时文件不得删除输入副本"
+    assert after_by_name["output"]["exists"] is True, "清理临时文件不得删除成果"
+
+
+def test_output_actions_and_delete_semantics(
+    client: TestClient, tmp_path: Path, profile, monkeypatch
+) -> None:
+    from babeldoc_workbench.services import lifecycle
+
+    finished = create_finished_task(client, tmp_path, profile)
+    opened: list[Path] = []
+    monkeypatch.setattr(lifecycle, "open_with_default_app", lambda path: opened.append(path))
+    monkeypatch.setattr(lifecycle, "reveal_in_explorer", lambda path: opened.append(path))
+
+    assert client.post(f"/api/tasks/{finished['id']}/reveal").status_code == 200
+    opened_result = client.post(f"/api/tasks/{finished['id']}/outputs/mono/open")
+    assert opened_result.status_code == 200
+    assert len(opened) == 2
+
+    wrong_kind = client.post(f"/api/tasks/{finished['id']}/outputs/log/open")
+    assert wrong_kind.status_code == 400
+
+    target = tmp_path / "另存位置"
+    target.mkdir()
+    saved = client.post(
+        f"/api/tasks/{finished['id']}/outputs/mono/save-as",
+        json={"target_dir": str(target)},
+    )
+    assert saved.status_code == 200
+    saved_path = Path(saved.json()["target"])
+    assert saved_path.is_file() and saved_path.parent == target
+
+    output_dir = Path(finished["output_dir"])
+    assert output_dir.is_dir()
+    # 只删除记录：文件保留
+    assert client.delete(f"/api/tasks/{finished['id']}").status_code == 204
+    assert output_dir.exists(), "删除记录不得删除文件"
+
+
+def test_delete_record_with_files_removes_task_directory(
+    client: TestClient, tmp_path: Path, profile
+) -> None:
+    finished = create_finished_task(client, tmp_path, profile)
+    output_dir = Path(finished["output_dir"])
+    task_dir = output_dir.parent
+    assert client.delete(f"/api/tasks/{finished['id']}?delete_files=true").status_code == 204
+    # 计划书的实现只删除 input/work/output/logs 四个子目录，保留任务根目录
+    for name in ("input", "work", "output", "logs"):
+        assert not (task_dir / name).exists(), f"{name} 应已删除"
+    assert list(task_dir.iterdir()) == [], "任务目录应为空"
+
+
+def test_app_settings_endpoints(client: TestClient, tmp_path: Path) -> None:
+    defaults = client.get("/api/settings/app").json()
+    assert defaults["log_level"] == "INFO"
+
+    target = tmp_path / "默认产出"
+    target.mkdir()
+    updated = client.put(
+        "/api/settings/app",
+        json={
+            "default_output_dir": str(target),
+            "retention_days": 7,
+            "log_level": "WARNING",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["retention_days"] == 7
+
+    invalid = client.put("/api/settings/app", json={"log_level": "TRACE"})
+    assert invalid.status_code == 400

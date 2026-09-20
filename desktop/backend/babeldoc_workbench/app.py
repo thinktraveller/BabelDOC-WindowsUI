@@ -103,6 +103,33 @@ class SessionInfo:
         }
 
 
+class DesktopBridge:
+    """暴露给页面的最小桌面桥：只提供目录选择（另存成果用）。"""
+
+    def __init__(self) -> None:
+        self.window = None
+
+    def choose_directory(self, initial: str | None = None) -> str | None:
+        try:
+            import webview
+        except Exception:  # pragma: no cover - 浏览器模式下没有 pywebview
+            return None
+        if self.window is None:
+            return None
+        try:
+            result = self.window.create_file_dialog(
+                webview.FOLDER_DIALOG, directory=initial or ""
+            )
+        except Exception as exc:  # pragma: no cover - 对话框异常
+            logger.warning("选择目录失败：%s", exc)
+            return None
+        if not result:
+            return None
+        if isinstance(result, (list, tuple)):
+            return str(result[0]) if result else None
+        return str(result)
+
+
 INDEX_HTML = """<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -453,7 +480,9 @@ def run_app(argv: Sequence[str] | None = None) -> int:
 
         import webview
 
-        window = webview.create_window(SELF_CHECK_TITLE, url)
+        bridge = DesktopBridge()
+        window = webview.create_window(SELF_CHECK_TITLE, url, js_api=bridge)
+        bridge.window = window
 
         def inject_token() -> None:
             """把令牌注入页面内存（不经过 URL、不落盘）。"""

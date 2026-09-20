@@ -16,7 +16,8 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useState } from "react";
 
-import { api, subscribeTaskEvents } from "../api";
+import { api, chooseDirectory, subscribeTaskEvents } from "../api";
+import { formatDuration, formatSize, kindLabel } from "../format";
 import type { TaskEvent, TaskInfo, TaskStatus } from "../types";
 import { describeError } from "./WorkbenchPanel";
 
@@ -128,13 +129,56 @@ export default function TasksPanel() {
     onError: (error) => message.error(describeError(error)),
   });
   const deleteMutation = useMutation({
-    mutationFn: api.deleteTask,
+    mutationFn: (id: number) => api.deleteTask(id, false),
     onSuccess: () => {
       message.success("已删除任务记录（文件未被删除）");
       setDetailId(null);
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (error) => message.error(describeError(error)),
+  });
+  const cleanupMutation = useMutation({
+    mutationFn: api.cleanupTask,
+    onSuccess: (result) => {
+      message.success(`已清理临时文件，释放 ${formatSize(result.freed_bytes)}`);
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["task", detailId] });
+    },
+    onError: (error) => message.error(describeError(error)),
+  });
+  const deleteFilesMutation = useMutation({
+    mutationFn: api.deleteTaskFiles,
+    onSuccess: (result) => {
+      message.success(`已删除应用管理的文件，释放 ${formatSize(result.freed_bytes)}`);
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["task", detailId] });
+    },
+    onError: (error) => message.error(describeError(error)),
+  });
+  const openMutation = useMutation({
+    mutationFn: ({ id, kind }: { id: number; kind: string }) => api.openOutput(id, kind),
+    onError: (error) => message.error(describeError(error)),
+  });
+  const revealMutation = useMutation({
+    mutationFn: api.revealTask,
+    onError: (error) => message.error(describeError(error)),
+  });
+  const saveAsMutation = useMutation({
+    mutationFn: async ({ id, kind }: { id: number; kind: string }) => {
+      const directory = await chooseDirectory(null);
+      if (!directory) {
+        throw new Error("已取消另存");
+      }
+      return api.saveOutputAs(id, kind, directory);
+    },
+    onSuccess: (result) => message.success(`已另存到 ${result.target}`),
+    onError: (error) => message.error(describeError(error)),
+  });
+
+  const taskFilesQuery = useQuery({
+    queryKey: ["task-files", detailId],
+    queryFn: () => api.taskFiles(detailId as number),
+    enabled: detailId !== null,
   });
 
   const columns: ColumnsType<TaskInfo> = [
@@ -143,6 +187,11 @@ export default function TasksPanel() {
       title: "文件",
       dataIndex: "input_name",
       ellipsis: true,
+    },
+    {
+      title: "目标语言",
+      width: 100,
+      render: (_value, task) => String(task.params?.lang_out ?? "—"),
     },
     {
       title: "状态",
@@ -173,6 +222,11 @@ export default function TasksPanel() {
       dataIndex: "error_message",
       ellipsis: true,
       render: (text: string | null) => text ?? "—",
+    },
+    {
+      title: "耗时",
+      width: 100,
+      render: (_value, task) => formatDuration(task.started_at, task.finished_at),
     },
     {
       title: "操作",
@@ -254,27 +308,108 @@ export default function TasksPanel() {
                   {JSON.stringify(detail.params)}
                 </Typography.Text>
               </Descriptions.Item>
+              <Descriptions.Item label="术语版本">
+                {detail.glossary_version_id ?? "未使用"}
+              </Descriptions.Item>
+              <Descriptions.Item label="耗时">
+                {formatDuration(detail.started_at, detail.finished_at)}
+              </Descriptions.Item>
               <Descriptions.Item label="引擎版本">
                 {detail.engine_version ?? "—"}
               </Descriptions.Item>
               {detail.error_message && (
-                <Descriptions.Item label="错误">{detail.error_message}</Descriptions.Item>
+                <Descriptions.Item label="错误">
+                  <div>{detail.error_message}</div>
+                  <Typography.Paragraph
+                    style={{ marginBottom: 0 }}
+                    copyable={{ text: JSON.stringify(detail.params) }}
+                  >
+                    <span className="hint-text">错误码：{detail.error_code ?? "—"}</span>
+                  </Typography.Paragraph>
+                </Descriptions.Item>
               )}
             </Descriptions>
             <Typography.Title level={5}>成果文件</Typography.Title>
             {detail.outputs.length === 0 && <span className="hint-text">暂无成果</span>}
             {detail.outputs.map((output) => (
-              <div key={output.path}>
-                <Tag>{output.kind}</Tag>
-                <Typography.Text
-                  type={output.exists ? undefined : "danger"}
-                  style={{ fontSize: 12 }}
-                >
+              <div key={output.path} style={{ marginBottom: 6 }}>
+                <Space size="small" wrap>
+                  <Tag>{kindLabel(output.kind)}</Tag>
+                  {output.exists ? (
+                    <>
+                      <Button
+                        size="small"
+                        onClick={() => openMutation.mutate({ id: detail.id, kind: output.kind })}
+                      >
+                        打开
+                      </Button>
+                      <Button
+                        size="small"
+                        onClick={() => saveAsMutation.mutate({ id: detail.id, kind: output.kind })}
+                      >
+                        另存为
+                      </Button>
+                      <Button size="small" onClick={() => revealMutation.mutate(detail.id)}>
+                        在文件夹中显示
+                      </Button>
+                      <span className="hint-text">{formatSize(output.size)}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Typography.Text type="danger">文件不存在或被移动</Typography.Text>
+                      <Button
+                        size="small"
+                        onClick={() => rerunMutation.mutate(detail.id)}
+                      >
+                        重新执行
+                      </Button>
+                    </>
+                  )}
+                </Space>
+                <div className="hint-text" style={{ wordBreak: "break-all" }}>
                   {output.path}
-                  {output.exists ? "" : "（文件不存在或被移动）"}
-                </Typography.Text>
+                </div>
               </div>
             ))}
+            <Typography.Title level={5}>文件管理</Typography.Title>
+            <Space direction="vertical" style={{ width: "100%" }}>
+              <span className="hint-text">
+                任务目录：{taskFilesQuery.data?.root ?? detail.output_dir}
+                （占用 {formatSize(taskFilesQuery.data?.total_size ?? 0)}）
+              </span>
+              <Space wrap>
+                <Button
+                  size="small"
+                  loading={cleanupMutation.isPending}
+                  onClick={() => cleanupMutation.mutate(detail.id)}
+                >
+                  清理任务临时文件
+                </Button>
+                <Popconfirm
+                  title="删除应用管理的文件？"
+                  description={
+                    <div style={{ maxWidth: 320 }}>
+                      将删除任务目录内的输入副本与成果（不可恢复）：
+                      {(taskFilesQuery.data?.items ?? [])
+                        .filter((item) => item.exists)
+                        .map((item) => (
+                          <div key={item.path} className="hint-text">
+                            {item.name}：{formatSize(item.size)}
+                          </div>
+                        ))}
+                      用户原始导入位置的文件不会被删除。
+                    </div>
+                  }
+                  okText="删除文件"
+                  cancelText="取消"
+                  onConfirm={() => deleteFilesMutation.mutate(detail.id)}
+                >
+                  <Button size="small" danger>
+                    删除应用管理的文件
+                  </Button>
+                </Popconfirm>
+              </Space>
+            </Space>
             <Typography.Title level={5}>事件时间线</Typography.Title>
             <div style={{ maxHeight: 260, overflow: "auto", fontSize: 12 }}>
               {events.slice(-60).map((event, index) => (

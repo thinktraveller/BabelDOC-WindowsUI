@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="运行多少秒后请求取消（验证真实引擎的取消路径）",
     )
+    parser.add_argument(
+        "--lifecycle-check",
+        action="store_true",
+        help="成功后检查成果操作与分层删除（另存、清理临时文件、删除应用管理的文件）",
+    )
     return parser.parse_args()
 
 
@@ -141,6 +146,40 @@ def main() -> int:
         print(f"{'✅' if not result_outputs else '❌'} 取消后成果数量：{len(result_outputs)}")
     print("-" * 60)
     print(f"总体结论：{'✅ ok' if ok else '❌ fail'}")
+
+    if ok and args.lifecycle_check:
+        from babeldoc_workbench.services import lifecycle
+
+        print("--- 成果操作与文件生命周期 ---")
+        target_dir = Path(tempfile.mkdtemp(prefix="babeldoc-verify-saveas-"))
+        saved = lifecycle.save_copy(refreshed, "mono", target_dir)
+        saved_ok = Path(saved["target"]).is_file()
+        source_ok = Path(saved["source"]).is_file()
+        print(f"{'✅' if saved_ok else '❌'} 另存单语成果 → {saved['target']}")
+        print(f"{'✅' if source_ok else '❌'} 另存后原成果仍存在")
+
+        before = lifecycle.describe_task_files(refreshed.id)
+        cleanup = lifecycle.clear_temp_files(refreshed.id)
+        after = lifecycle.describe_task_files(refreshed.id)
+        after_by_name = {item["name"]: item for item in after["items"]}
+        temp_ok = not after_by_name["work"]["exists"]
+        keep_ok = after_by_name["input"]["exists"] and after_by_name["output"]["exists"]
+        print(
+            f"{'✅' if temp_ok else '❌'} 清理临时文件释放 {cleanup['freed_bytes']} 字节，"
+            "work 目录已删除"
+        )
+        print(f"{'✅' if keep_ok else '❌'} 清理后输入副本与成果仍在")
+
+        removed = lifecycle.delete_managed_files(refreshed.id)
+        root = lifecycle.task_root(refreshed.id)
+        managed_gone = all(not (root / name).exists() for name in ("input", "work", "output", "logs"))
+        print(
+            f"{'✅' if managed_gone else '❌'} 删除应用管理的文件（释放 "
+            f"{removed['freed_bytes']} 字节），输入副本与成果已清除"
+        )
+        print(f"   清理前任务目录占用：{before['total_size']} 字节")
+        ok = ok and saved_ok and source_ok and temp_ok and keep_ok and managed_gone
+        print(f"总体结论（含生命周期检查）：{'✅ ok' if ok else '❌ fail'}")
     db.close()
     return 0 if ok else 1
 

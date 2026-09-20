@@ -19,6 +19,7 @@ from babeldoc_workbench.pdfinfo import PdfInfoError, page_count
 from babeldoc_workbench.services import files as file_store
 from babeldoc_workbench.services import params as params_service
 from babeldoc_workbench.services import task_store
+from babeldoc_workbench.services import lifecycle
 from babeldoc_workbench.services.task_queue import (
     SKIP_TRANSLATION_KEY,
     TaskQueue,
@@ -52,6 +53,10 @@ class TaskCreatePayload(BaseModel):
     glossary_tgt_lng: str | None = None
     # 仅自动验证使用：只有服务端设置了 BABELDOC_ALLOW_SKIP_TRANSLATION=1 才生效
     skip_translation: bool = False
+
+
+class SaveAsPayload(BaseModel):
+    target_dir: str
 
 
 def _validate_or_400(
@@ -241,15 +246,102 @@ def rerun_task(task_id: int) -> dict:
 
 
 @router.delete("/{task_id}", status_code=204)
-def delete_task(task_id: int) -> None:
-    """只删除任务记录与索引；文件生命周期操作在步骤 7 单独实现。"""
+def delete_task(task_id: int, delete_files: bool = Query(default=False)) -> None:
+    """删除任务记录；``delete_files=true`` 时一并删除应用管理的文件（需二次确认）。"""
     try:
         task = task_store.get_task(task_id)
     except task_store.TaskNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if task.status not in TASK_TERMINAL_STATUSES:
         raise HTTPException(status_code=409, detail="任务仍在进行中，请先取消")
+    if delete_files:
+        try:
+            lifecycle.delete_managed_files(task_id)
+        except lifecycle.LifecycleError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     task.delete_instance(recursive=True)
+
+
+@router.get("/{task_id}/files")
+def task_files(task_id: int) -> dict:
+    """列出任务目录内容与体积，供删除前的确认文案使用。"""
+    try:
+        task_store.get_task(task_id)
+        return lifecycle.describe_task_files(task_id)
+    except task_store.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lifecycle.LifecycleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{task_id}/cleanup")
+def cleanup_task(task_id: int) -> dict:
+    """只清理临时文件（work/tmp），保留输入副本与成果。"""
+    try:
+        task_store.get_task(task_id)
+        result = lifecycle.clear_temp_files(task_id)
+    except task_store.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lifecycle.LifecycleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+@router.delete("/{task_id}/files")
+def delete_task_files(task_id: int) -> dict:
+    """删除任务目录内的输入副本与成果（保留任务记录）。"""
+    try:
+        task = task_store.get_task(task_id)
+        if task.status not in TASK_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail="任务仍在进行中，请先取消")
+        result = lifecycle.delete_managed_files(task_id)
+    except task_store.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lifecycle.LifecycleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
+
+
+@router.post("/{task_id}/reveal")
+def reveal_output(task_id: int) -> dict:
+    """在资源管理器中打开输出目录。"""
+    try:
+        task = task_store.get_task(task_id)
+        path = Path(task.output_dir)
+        if not path.exists():
+            raise lifecycle.LifecycleError("输出目录不存在，可能已被清理")
+        lifecycle.reveal_in_explorer(path)
+    except task_store.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lifecycle.LifecycleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"task_id": task_id, "path": str(path)}
+
+
+@router.post("/{task_id}/outputs/{kind}/open")
+def open_output(task_id: int, kind: str) -> dict:
+    """用系统默认程序打开成果文件。"""
+    try:
+        task = task_store.get_task(task_id)
+        path = lifecycle.output_path(task, kind)
+        lifecycle.open_with_default_app(path)
+    except task_store.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lifecycle.LifecycleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"task_id": task_id, "kind": kind, "path": str(path)}
+
+
+@router.post("/{task_id}/outputs/{kind}/save-as")
+def save_output_as(task_id: int, kind: str, payload: SaveAsPayload) -> dict:
+    """把成果复制到用户选择的目录（不删除原文件）。"""
+    try:
+        task = task_store.get_task(task_id)
+        return lifecycle.save_copy(task, kind, payload.target_dir)
+    except task_store.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lifecycle.LifecycleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _sse(event: str, payload: dict[str, Any]) -> str:
