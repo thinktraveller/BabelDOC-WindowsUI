@@ -100,3 +100,39 @@ export interface Preset {
   params: Record<string, unknown>;
   created_at: string | null;
 }
+
+export interface GlossaryInfo {
+  id: number;
+  name: string;
+  tgt_lng: string;
+  source_task_id: number | null;
+  entry_count: number;
+  conflict_count: number;
+  version_count: number;
+  created_at: string | null;
+  summary?: Record<string, number>;
+}
+
+export type GlossaryEntryStatus = "new" | "edited" | "approved" | "conflict";
+
+export interface GlossaryEntryInfo {
+  id: number;
+  glossary_id: number;
+  source: string;
+  target: string;
+  tgt_lng: string;
+  status: GlossaryEntryStatus;
+  conflict_target: string | null;
+  updated_at: string | null;
+}
+
+export interface GlossaryVersionInfo {
+  id: number;
+  glossary_id: number;
+  version: number;
+  note: string | null;
+  entry_count: number;
+  snapshot_path: string;
+  created_at: string | null;
+  glossary_name?: string;
+}

@@ -17,6 +17,7 @@ from babeldoc_workbench.engine.protocol import TERMINAL_EVENT_TYPES
 from babeldoc_workbench.models import TASK_TERMINAL_STATUSES, TASK_STATUSES
 from babeldoc_workbench.pdfinfo import PdfInfoError, page_count
 from babeldoc_workbench.services import files as file_store
+from babeldoc_workbench.services import glossaries
 from babeldoc_workbench.services import params as params_service
 from babeldoc_workbench.services import task_store
 from babeldoc_workbench.services import lifecycle
@@ -62,9 +63,15 @@ class SaveAsPayload(BaseModel):
 def _validate_or_400(
     payload: TaskCreatePayload, *, pages: int | None
 ) -> dict[str, Any]:
-    glossary = (
-        {"tgt_lng": payload.glossary_tgt_lng} if payload.glossary_tgt_lng else None
-    )
+    glossary_target = payload.glossary_tgt_lng
+    version_id = payload.params.get("glossary_version_id")
+    if version_id:
+        try:
+            _version, glossary_row = glossaries.version_for_task(int(version_id))
+        except glossaries.GlossaryError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        glossary_target = glossary_row.tgt_lng
+    glossary = {"tgt_lng": glossary_target} if glossary_target else None
     result = params_service.validate_params(
         payload.params, page_count=pages, glossary=glossary
     )

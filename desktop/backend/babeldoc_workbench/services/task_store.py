@@ -241,12 +241,15 @@ def outputs_of(task: Task, *, recheck: bool = True) -> list[dict[str, Any]]:
 
 def public_task(task: Task, *, include_events: bool = False) -> dict[str, Any]:
     stage = task.stage
+    from babeldoc_workbench.services import glossaries
+
     payload = {
         "id": task.id,
         "status": task.status,
         "input_name": task.input_name,
         "api_profile_id": task.api_profile_id,
         "glossary_version_id": task.glossary_version_id,
+        "glossary_source_id": glossaries.glossary_versions_of_task(task.id),
         "engine_version": task.engine_version,
         "stage": stage,
         "stage_label": stage_label(stage) if stage else None,

@@ -1,5 +1,8 @@
 import type {
   ApiProfile,
+  GlossaryEntryInfo,
+  GlossaryInfo,
+  GlossaryVersionInfo,
   ConnectionTestResult,
   ParamsSchema,
   Preset,
@@ -222,6 +225,71 @@ export const api = {
         body: JSON.stringify(patch),
       },
     ),
+
+  listGlossaries: () => request<{ items: GlossaryInfo[] }>("/api/glossaries"),
+  importGlossaryFromTask: (taskId: number, name?: string) =>
+    request<GlossaryInfo>("/api/glossaries/import-task", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: taskId, name: name ?? null }),
+    }),
+  importGlossaryCsv: (file: File, name: string, tgtLng: string) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    form.append("name", name);
+    form.append("tgt_lng", tgtLng);
+    return request<GlossaryInfo>("/api/glossaries/import", { method: "POST", body: form });
+  },
+  listGlossaryEntries: (glossaryId: number, filters: Record<string, string | number>) => {
+    const search = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== "" && value !== undefined && value !== null) {
+        search.set(key, String(value));
+      }
+    });
+    return request<{ total: number; items: GlossaryEntryInfo[] }>(
+      `/api/glossaries/${glossaryId}/entries?${search.toString()}`,
+    );
+  },
+  updateGlossaryEntry: (entryId: number, patch: Record<string, unknown>) =>
+    request<GlossaryEntryInfo>(`/api/glossaries/entries/${entryId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  deleteGlossaryEntry: (entryId: number) =>
+    request<void>(`/api/glossaries/entries/${entryId}`, { method: "DELETE" }),
+  bulkGlossaryStatus: (glossaryId: number, entryIds: number[], status: string) =>
+    request<{ updated: number }>(`/api/glossaries/${glossaryId}/entries/bulk-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entry_ids: entryIds, status }),
+    }),
+  resolveGlossaryConflict: (glossaryId: number, entryId: number, keep: "existing" | "incoming") =>
+    request<GlossaryEntryInfo>(`/api/glossaries/${glossaryId}/resolve-conflict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entry_id: entryId, keep }),
+    }),
+  createGlossaryVersion: (glossaryId: number, note?: string) =>
+    request<GlossaryVersionInfo>(`/api/glossaries/${glossaryId}/versions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note: note ?? null }),
+    }),
+  listGlossaryVersions: (glossaryId?: number, tgtLng?: string) => {
+    const search = new URLSearchParams();
+    if (glossaryId) {
+      search.set("glossary_id", String(glossaryId));
+    }
+    if (tgtLng) {
+      search.set("tgt_lng", tgtLng);
+    }
+    return request<{ items: GlossaryVersionInfo[] }>(
+      `/api/glossaries/versions?${search.toString()}`,
+    );
+  },
+  glossaryExportUrl: (glossaryId: number) => `/api/glossaries/${glossaryId}/export`,
 };
 
 /** 选择目录：桌面窗口里用原生对话框，浏览器里退回手输路径。 */

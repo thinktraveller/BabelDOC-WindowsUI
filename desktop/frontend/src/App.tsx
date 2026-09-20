@@ -2,6 +2,7 @@ import { Alert, Button, Layout, Space, Tabs, Tag, Typography } from "antd";
 import { useState } from "react";
 
 import SettingsDrawer from "./components/SettingsDrawer";
+import GlossaryPanel from "./components/GlossaryPanel";
 import TasksPanel from "./components/TasksPanel";
 import WorkbenchPanel from "./components/WorkbenchPanel";
 
@@ -46,6 +47,7 @@ export default function App() {
               children: <WorkbenchPanel onOpenSettings={() => setSettingsOpen(true)} />,
             },
             { key: "tasks", label: "任务与文件", children: <TasksPanel /> },
+            { key: "glossary", label: "术语表", children: <GlossaryPanel /> },
           ]}
         />
       </Content>

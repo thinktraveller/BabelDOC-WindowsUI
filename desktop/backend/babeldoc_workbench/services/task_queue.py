@@ -29,7 +29,7 @@ from babeldoc_workbench.models import (
     TASK_STATUS_RUNNING,
     Task,
 )
-from babeldoc_workbench.services import api_profiles, task_store
+from babeldoc_workbench.services import api_profiles, glossaries, task_store
 from babeldoc_workbench.services.params import to_engine_fields
 from babeldoc_workbench.services.worker_runner import (
     DEFAULT_CANCEL_TIMEOUT,
@@ -212,11 +212,22 @@ class TaskQueue:
                 return
 
         fields = to_engine_fields(snapshot)
+        glossary_files: tuple[str, ...] = ()
+        if task.glossary_version_id:
+            try:
+                version, _glossary = glossaries.version_for_task(task.glossary_version_id)
+            except glossaries.GlossaryError as exc:
+                task_store.mark_failed(
+                    task, code="glossary_unavailable", message=str(exc)
+                )
+                return
+            glossary_files = (str(version.snapshot_path),)
         request = EngineJobRequest(
             job_id=f"task-{task.id}",
             input_path=task.stored_input_path,
             output_dir=str(dirs["output"]),
             **fields,
+            glossary_files=glossary_files,
             skip_translation=skip_translation,
         )
         task_store.mark_running(task)

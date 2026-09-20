@@ -139,4 +139,70 @@ class TaskEvent(BaseModel):
         table_name = "task_events"
 
 
-ALL_TABLES = (AppSetting, ApiProfile, ParamPreset, Task, TaskOutput, TaskEvent)
+GLOSSARY_STATUS_NEW = "new"
+GLOSSARY_STATUS_EDITED = "edited"
+GLOSSARY_STATUS_APPROVED = "approved"
+GLOSSARY_STATUS_CONFLICT = "conflict"
+GLOSSARY_STATUSES = (
+    GLOSSARY_STATUS_NEW,
+    GLOSSARY_STATUS_EDITED,
+    GLOSSARY_STATUS_APPROVED,
+    GLOSSARY_STATUS_CONFLICT,
+)
+
+
+class Glossary(BaseModel):
+    """术语资料库；``source_task_id`` 记录它是从哪个任务的提取结果导入的。"""
+
+    name = CharField()
+    source_task_id = IntegerField(null=True)
+    tgt_lng = CharField()
+    created_at = DateTimeField(default=datetime.now)
+
+    class Meta:
+        table_name = "glossaries"
+
+
+class GlossaryEntry(BaseModel):
+    """术语条目；“源词 + 目标语言”是唯一键，冲突时保留另一候选值而不覆盖。"""
+
+    glossary = ForeignKeyField(Glossary, backref="entries", on_delete="CASCADE")
+    source = CharField()
+    target = CharField()
+    tgt_lng = CharField()
+    status = CharField(default=GLOSSARY_STATUS_NEW)
+    conflict_target = CharField(null=True)
+    created_at = DateTimeField(default=datetime.now)
+    updated_at = DateTimeField(default=datetime.now)
+
+    class Meta:
+        table_name = "glossary_entries"
+        indexes = ((("glossary", "source", "tgt_lng"), True),)
+
+
+class GlossaryVersion(BaseModel):
+    """不可变版本快照；任务提交时绑定这里的 id。"""
+
+    glossary = ForeignKeyField(Glossary, backref="versions", on_delete="CASCADE")
+    version = IntegerField()
+    snapshot_path = CharField()
+    note = CharField(null=True)
+    entry_count = IntegerField(default=0)
+    created_at = DateTimeField(default=datetime.now)
+
+    class Meta:
+        table_name = "glossary_versions"
+        indexes = ((("glossary", "version"), True),)
+
+
+ALL_TABLES = (
+    AppSetting,
+    ApiProfile,
+    ParamPreset,
+    Task,
+    TaskOutput,
+    TaskEvent,
+    Glossary,
+    GlossaryEntry,
+    GlossaryVersion,
+)

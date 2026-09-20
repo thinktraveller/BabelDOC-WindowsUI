@@ -47,6 +47,11 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
   const filesQuery = useQuery({ queryKey: ["files"], queryFn: api.listFiles });
   const profilesQuery = useQuery({ queryKey: ["profiles"], queryFn: api.listProfiles });
   const presetsQuery = useQuery({ queryKey: ["presets"], queryFn: api.listPresets });
+  const langOut = (Form.useWatch("lang_out", form) as string | undefined) ?? "zh";
+  const versionsQuery = useQuery({
+    queryKey: ["glossary-versions", langOut],
+    queryFn: () => api.listGlossaryVersions(undefined, langOut),
+  });
 
   useEffect(() => {
     if (!schemaQuery.data) {
@@ -162,6 +167,15 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
     () => profiles.find((item) => item.id === state.profileId) ?? null,
     [profiles, state.profileId],
   );
+  const glossaryOptions = (versionsQuery.data?.items ?? []).map((version) => ({
+    value: version.id,
+    label: `${version.glossary_name ?? `术语表 ${version.glossary_id}`} v${version.version}（${version.entry_count} 条）`,
+  }));
+  const selectedVersionId = Form.useWatch("glossary_version_id", form) as
+    | number
+    | undefined;
+  const selectedVersionLabel =
+    glossaryOptions.find((option) => option.value === selectedVersionId)?.label ?? "未选择";
 
   const submitDisabled =
     selectedCount === 0 ||
@@ -315,7 +329,7 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
             常用参数
           </Typography.Title>
           <div className="panel-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
-            {commonSpecs.map((spec) => renderField(spec, fieldErrors))}
+            {commonSpecs.map((spec) => renderField(spec, fieldErrors, glossaryOptions))}
           </div>
 
           <Collapse
@@ -327,7 +341,9 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
                 label: "高级参数",
                 children: (
                   <div className="panel-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
-                    {advancedSpecs.map((spec) => renderField(spec, fieldErrors))}
+                    {advancedSpecs.map((spec) =>
+                      renderField(spec, fieldErrors, glossaryOptions),
+                    )}
                   </div>
                 ),
               },
@@ -344,7 +360,7 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
               ? `${selectedProfile.name} · ${selectedProfile.model}`
               : "尚未选择"}
           </Descriptions.Item>
-          <Descriptions.Item label="术语版本">未选择（步骤 8 提供）</Descriptions.Item>
+          <Descriptions.Item label="术语版本">{selectedVersionLabel}</Descriptions.Item>
           <Descriptions.Item label="输出位置">
             应用数据目录下的任务目录（任务详情中可见具体路径）
           </Descriptions.Item>
@@ -368,7 +384,11 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
   );
 }
 
-function renderField(spec: ParamSpec, fieldErrors: Record<string, string>) {
+function renderField(
+  spec: ParamSpec,
+  fieldErrors: Record<string, string>,
+  glossaryOptions: { value: number; label: string }[] = [],
+) {
   const error = fieldErrors[spec.key];
   const common = {
     name: spec.key,
@@ -394,6 +414,17 @@ function renderField(spec: ParamSpec, fieldErrors: Record<string, string>) {
     return (
       <Form.Item key={spec.key} {...common}>
         <InputNumber min={0.05} step={0.05} style={{ width: "100%" }} />
+      </Form.Item>
+    );
+  }
+  if (spec.type === "glossary") {
+    return (
+      <Form.Item key={spec.key} {...common}>
+        <Select
+          allowClear
+          placeholder={glossaryOptions.length ? "选择已生成的术语版本" : "暂无可用版本"}
+          options={glossaryOptions}
+        />
       </Form.Item>
     );
   }

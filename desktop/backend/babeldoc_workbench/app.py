@@ -241,12 +241,14 @@ def create_app(
     from babeldoc_workbench.api.settings import router as settings_router
     from babeldoc_workbench.api.files import router as files_router
     from babeldoc_workbench.api.tasks import router as tasks_router
+    from babeldoc_workbench.api.glossary import router as glossary_router
 
     app = FastAPI(title="BabelDOC Workbench", docs_url=None, redoc_url=None)
     light_provider = light_checks_provider or _cache_light_checks()
     app.include_router(settings_router)
     app.include_router(files_router)
     app.include_router(tasks_router)
+    app.include_router(glossary_router)
 
     dist_dir = Path(frontend_dir) if frontend_dir is not None else frontend_dist_dir()
     if dist_dir is not None and not (dist_dir / "index.html").is_file():
