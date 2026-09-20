@@ -16,12 +16,16 @@ if str(BACKEND_DIR) not in sys.path:
 def workbench_db(tmp_path: Path):
     """每个测试使用独立的临时 SQLite 应用库。"""
     from babeldoc_workbench import db
+    from babeldoc_workbench.settings import ensure_app_dirs, set_current_paths
 
-    db.init(tmp_path / "db")
+    paths = ensure_app_dirs(tmp_path / "appdata")
+    set_current_paths(paths)
+    db.init(paths.db)
     try:
         yield db
     finally:
         db.close()
+        set_current_paths(None)
 
 
 @pytest.fixture

@@ -189,10 +189,14 @@ def create_app(
     from fastapi.responses import HTMLResponse, JSONResponse
 
     from babeldoc_workbench.api.settings import router as settings_router
+    from babeldoc_workbench.api.files import router as files_router
+    from babeldoc_workbench.api.tasks import router as tasks_router
 
     app = FastAPI(title="BabelDOC Workbench", docs_url=None, redoc_url=None)
     light_provider = light_checks_provider or _cache_light_checks()
     app.include_router(settings_router)
+    app.include_router(files_router)
+    app.include_router(tasks_router)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -350,6 +354,9 @@ def run_app(argv: Sequence[str] | None = None) -> int:
     from babeldoc_workbench import db
 
     db.init(paths.db)
+    from babeldoc_workbench.settings import set_current_paths
+
+    set_current_paths(paths)
     log_file = setup_logging(paths.logs)
     logger.info("应用启动：数据目录 %s，日志 %s", paths.root, log_file)
 
@@ -364,6 +371,13 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         logger.info(message)
         emit_report(message, args.report_file)
         return 0
+
+    from babeldoc_workbench.api.tasks import set_queue
+    from babeldoc_workbench.services.task_queue import TaskQueue
+
+    queue = TaskQueue()
+    queue.start()
+    set_queue(queue)
 
     try:
         session = SessionInfo(token=security.generate_session_token())
@@ -408,6 +422,8 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         server.should_exit = True
         return 0
     finally:
+        set_queue(None)
+        queue.stop()
         lock.release()
 
 

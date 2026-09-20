@@ -1,0 +1,315 @@
+"""任务与文件接口的端到端测试（走完整鉴权中间件；工作进程用替身）。"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import httpx
+import pymupdf
+import pytest
+from fastapi.testclient import TestClient
+
+from babeldoc_workbench import security
+from babeldoc_workbench.api import tasks as tasks_api
+from babeldoc_workbench.app import SessionInfo, bind_loopback_socket, create_app, start_server
+from babeldoc_workbench.engine.selfcheck import run_light_checks
+from babeldoc_workbench.services import api_profiles, task_store
+from babeldoc_workbench.services.task_queue import QueueConfig, TaskQueue
+from engine_fakes import make_fake_runner
+
+FAKE_KEY = "sk-fake-tasks-api-key"
+PORT = 8321
+TOKEN = "fake-tasks-api-token"
+
+
+def make_sample_pdf(path: Path, pages: int = 2) -> Path:
+    document = pymupdf.open()
+    for index in range(pages):
+        page = document.new_page()
+        page.insert_text((72, 96), f"Sample page {index + 1}", fontsize=16)
+    document.save(path)
+    document.close()
+    return path
+
+
+def build_queue(runner) -> TaskQueue:
+    return TaskQueue(
+        runner=runner,
+        config=QueueConfig(poll_interval=0.05, db_event_interval=0.05, sse_event_interval=0.0),
+    )
+
+
+@pytest.fixture
+def queue(workbench_db):
+    task_queue = build_queue(make_fake_runner(step_delay=0.02))
+    task_queue.start()
+    tasks_api.set_queue(task_queue)
+    try:
+        yield task_queue
+    finally:
+        tasks_api.set_queue(None)
+        task_queue.stop()
+
+
+@pytest.fixture
+def client(workbench_db, fake_keyring, queue):
+    session = SessionInfo(token=TOKEN, port=PORT)
+    app = create_app(
+        lambda deep=False: run_light_checks(), session, lambda: run_light_checks()
+    )
+    with TestClient(
+        app, base_url=f"http://127.0.0.1:{PORT}", headers={security.TOKEN_HEADER: TOKEN}
+    ) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def profile(workbench_db, fake_keyring):
+    return api_profiles.create_profile(
+        name="任务测试",
+        base_url="https://example.test/v1",
+        model="demo",
+        api_key=FAKE_KEY,
+    )
+
+
+def import_pdf(client: TestClient, tmp_path: Path, name: str = "sample.pdf") -> dict:
+    pdf = make_sample_pdf(tmp_path / name)
+    with pdf.open("rb") as handle:
+        response = client.post(
+            "/api/files/import", files={"files": (name, handle, "application/pdf")}
+        )
+    assert response.status_code == 201, response.text
+    return response.json()["items"][0]
+
+
+def wait_for_terminal(client: TestClient, task_id: int, timeout: float = 20.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        payload = client.get(f"/api/tasks/{task_id}").json()
+        if payload["status"] in {"succeeded", "failed", "cancelled", "interrupted"}:
+            return payload
+        time.sleep(0.05)
+    return client.get(f"/api/tasks/{task_id}").json()
+
+
+def test_import_rejects_non_pdf(client: TestClient, tmp_path: Path) -> None:
+    txt = tmp_path / "note.txt"
+    txt.write_text("hello", encoding="utf-8")
+    with txt.open("rb") as handle:
+        response = client.post(
+            "/api/files/import", files={"files": ("note.txt", handle, "text/plain")}
+        )
+    assert response.status_code == 400
+    assert "PDF" in response.json()["detail"]
+
+
+def test_import_and_list_files(client: TestClient, tmp_path: Path) -> None:
+    staged = import_pdf(client, tmp_path)
+    assert staged["name"] == "sample.pdf"
+    assert staged["size"] > 0
+    listed = client.get("/api/files").json()["items"]
+    assert [item["id"] for item in listed] == [staged["id"]]
+
+
+def test_create_task_runs_to_success(client: TestClient, tmp_path: Path, profile) -> None:
+    staged = import_pdf(client, tmp_path)
+    response = client.post(
+        "/api/tasks",
+        json={
+            "file_ids": [staged["id"]],
+            "api_profile_id": profile["id"],
+            "params": {"lang_in": "en", "lang_out": "zh", "qps": 6},
+        },
+    )
+    assert response.status_code == 201, response.text
+    task = response.json()["items"][0]
+    assert task["params"]["qps"] == 6
+    assert task["status"] in {"queued", "preparing", "running"}
+
+    finished = wait_for_terminal(client, task["id"])
+    assert finished["status"] == "succeeded"
+    assert finished["progress"] == 100.0
+    kinds = {item["kind"] for item in finished["outputs"]}
+    assert {"mono", "dual"} <= kinds
+    assert finished["events"], "任务事件应当在详情里可见"
+
+    listed = client.get("/api/tasks").json()["items"]
+    assert any(item["id"] == task["id"] for item in listed)
+
+
+def test_create_task_rejects_invalid_params(client: TestClient, tmp_path: Path, profile) -> None:
+    staged = import_pdf(client, tmp_path)
+    response = client.post(
+        "/api/tasks",
+        json={
+            "file_ids": [staged["id"]],
+            "api_profile_id": profile["id"],
+            "params": {"pages": "9-2", "qps": 0},
+        },
+    )
+    assert response.status_code == 400
+    errors = response.json()["detail"]["errors"]
+    assert "pages" in errors and "qps" in errors
+
+
+def test_create_task_requires_api_profile(client: TestClient, tmp_path: Path) -> None:
+    staged = import_pdf(client, tmp_path)
+    response = client.post("/api/tasks", json={"file_ids": [staged["id"]], "params": {}})
+    assert response.status_code == 400
+    assert "API 配置" in response.json()["detail"]
+
+
+def test_create_task_validates_page_range_against_pdf(
+    client: TestClient, tmp_path: Path, profile
+) -> None:
+    staged = import_pdf(client, tmp_path)  # 2 页
+    response = client.post(
+        "/api/tasks",
+        json={
+            "file_ids": [staged["id"]],
+            "api_profile_id": profile["id"],
+            "params": {"pages": "1-5"},
+        },
+    )
+    assert response.status_code == 400
+    assert "共 2 页" in response.json()["detail"]["errors"]["pages"]
+
+
+def test_rerun_creates_new_task(client: TestClient, tmp_path: Path, profile) -> None:
+    staged = import_pdf(client, tmp_path)
+    created = client.post(
+        "/api/tasks",
+        json={"file_ids": [staged["id"]], "api_profile_id": profile["id"], "params": {}},
+    ).json()["items"][0]
+    finished = wait_for_terminal(client, created["id"])
+    assert finished["status"] == "succeeded"
+
+    rerun = client.post(f"/api/tasks/{created['id']}/rerun")
+    assert rerun.status_code == 201
+    new_task = rerun.json()
+    assert new_task["id"] != created["id"]
+    assert new_task["input_name"] == finished["input_name"]
+
+    original = client.get(f"/api/tasks/{created['id']}").json()
+    assert original["status"] == "succeeded"
+    wait_for_terminal(client, new_task["id"])
+
+
+def test_delete_running_task_is_rejected(
+    client: TestClient, tmp_path: Path, profile, queue
+) -> None:
+    queue.runner = make_fake_runner(step_delay=0.2, wait_for_cancel=True)
+    staged = import_pdf(client, tmp_path)
+    task = client.post(
+        "/api/tasks",
+        json={"file_ids": [staged["id"]], "api_profile_id": profile["id"], "params": {}},
+    ).json()["items"][0]
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if client.get(f"/api/tasks/{task['id']}").json()["status"] == "running":
+            break
+        time.sleep(0.05)
+    assert client.delete(f"/api/tasks/{task['id']}").status_code == 409
+    assert client.post(f"/api/tasks/{task['id']}/cancel").status_code == 200
+    wait_for_terminal(client, task["id"])
+    assert client.delete(f"/api/tasks/{task['id']}").status_code == 204
+    assert client.get(f"/api/tasks/{task['id']}").status_code == 404
+
+
+def test_sse_snapshot_for_finished_task(client: TestClient, tmp_path: Path, profile) -> None:
+    staged = import_pdf(client, tmp_path)
+    task = client.post(
+        "/api/tasks",
+        json={"file_ids": [staged["id"]], "api_profile_id": profile["id"], "params": {}},
+    ).json()["items"][0]
+    wait_for_terminal(client, task["id"])
+
+    with client.stream("GET", f"/api/tasks/{task['id']}/events") as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_lines())
+    assert "event: snapshot" in body
+    assert "succeeded" in body
+
+
+def test_sse_live_stream_and_cancel(workbench_db, fake_keyring, tmp_path: Path, profile) -> None:
+    import threading
+
+    queue = build_queue(make_fake_runner(block_until_cancel=True))
+    queue.start()
+    tasks_api.set_queue(queue)
+    session = SessionInfo(token=TOKEN)
+    sock, port = bind_loopback_socket()
+    session.port = port
+    app = create_app(
+        lambda deep=False: run_light_checks(), session, lambda: run_light_checks()
+    )
+    server = start_server(app, sock)
+    base = f"http://127.0.0.1:{port}"
+    headers = {security.TOKEN_HEADER: TOKEN}
+    try:
+        pdf = make_sample_pdf(tmp_path / "live.pdf")
+        with pdf.open("rb") as handle:
+            staged = httpx.post(
+                f"{base}/api/files/import",
+                files={"files": ("live.pdf", handle, "application/pdf")},
+                headers=headers,
+                timeout=30,
+            ).json()["items"][0]
+        task = httpx.post(
+            f"{base}/api/tasks",
+            json={
+                "file_ids": [staged["id"]],
+                "api_profile_id": profile["id"],
+                "params": {},
+            },
+            headers=headers,
+            timeout=30,
+        ).json()["items"][0]
+
+        seen_events: list[str] = []
+
+        def read_stream() -> None:
+            try:
+                with httpx.stream(
+                    "GET",
+                    f"{base}/api/tasks/{task['id']}/events",
+                    headers=headers,
+                    timeout=30,
+                ) as response:
+                    for line in response.iter_lines():
+                        if line.startswith("event:"):
+                            seen_events.append(line.split(":", 1)[1].strip())
+            except Exception as exc:  # pragma: no cover - 仅用于诊断
+                seen_events.append(f"stream-error:{type(exc).__name__}")
+
+        stream_thread = threading.Thread(target=read_stream, daemon=True)
+        stream_thread.start()
+        time.sleep(1.0)
+
+        cancelled = httpx.post(
+            f"{base}/api/tasks/{task['id']}/cancel", headers=headers, timeout=30
+        )
+        assert cancelled.status_code == 200
+        stream_thread.join(30)
+        assert "snapshot" in seen_events, seen_events
+        assert "cancelled" in seen_events, seen_events
+        deadline = time.monotonic() + 20
+        status = ""
+        while time.monotonic() < deadline:
+            status = httpx.get(
+                f"{base}/api/tasks/{task['id']}", headers=headers, timeout=30
+            ).json()["status"]
+            if status in {"cancelled", "failed", "succeeded"}:
+                break
+            time.sleep(0.1)
+        assert status == "cancelled"
+        assert queue.current_task_id() is None or status == "cancelled"
+    finally:
+        server.should_exit = True
+        tasks_api.set_queue(None)
+        queue.stop()
+        # 服务线程退出后再结束测试
+        time.sleep(0.5)

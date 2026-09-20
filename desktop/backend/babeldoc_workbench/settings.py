@@ -13,6 +13,8 @@ from pathlib import Path
 APP_DIR_NAME = "BabelDOC Workbench"
 SUBDIRS = ("db", "tasks", "logs", "tmp")
 
+_current_paths: AppPaths | None = None
+
 
 class AppDataDirectoryError(RuntimeError):
     """应用数据目录不可用：按约定明确报错，不静默改用其他目录。"""
@@ -79,3 +81,15 @@ def ensure_app_dirs(root: Path | None = None) -> AppPaths:
             "请检查路径权限或磁盘空间后重试。"
         ) from exc
     return paths
+
+
+def set_current_paths(paths: AppPaths | None) -> None:
+    """记录本次运行使用的应用目录；服务层通过 :func:`current_paths` 读取。"""
+    global _current_paths
+    _current_paths = paths
+
+
+def current_paths() -> AppPaths:
+    if _current_paths is None:
+        raise RuntimeError("应用数据目录尚未初始化")
+    return _current_paths
