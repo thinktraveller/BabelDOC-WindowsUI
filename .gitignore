@@ -55,3 +55,6 @@ temp.jpg
 /project-docs/
 /AGENTS.md
 
+# Local credential file for development and verification
+/.env
+
