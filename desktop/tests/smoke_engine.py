@@ -5,10 +5,8 @@
     # 离线自检：跳过 LLM 翻译，验证工作进程、ONNX 版面模型、事件流与产物
     python desktop\\tests\\smoke_engine.py --offline
 
-    # 真实翻译：从环境变量读取 API 配置，避免密钥出现在命令行
-    $env:BABELDOC_WORKBENCH_BASE_URL = "https://<你的服务>/v1"
-    $env:BABELDOC_WORKBENCH_API_KEY  = "<你的 Key>"
-    $env:BABELDOC_WORKBENCH_MODEL    = "<模型名>"
+    # 真实翻译：从 .env 读取 API 配置（进程环境变量优先），密钥不出现在命令行
+    Copy-Item env.example .env      # 然后填写 BABELDOC_BASE_URL / BABELDOC_MODEL / BABELDOC_API_KEY
     python desktop\\tests\\smoke_engine.py --input examples\\ci\\test.pdf --lang-out zh
 """
 
@@ -16,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing
-import os
 import sys
 import time
 from pathlib import Path
@@ -37,22 +34,41 @@ from babeldoc_workbench.engine.worker import (  # noqa: E402
     MSG_EXIT,
     worker_entry,
 )
+from babeldoc_workbench.dev_env import (  # noqa: E402
+    DEFAULT_ENV_FILENAME,
+    describe_source,
+    load_env_file,
+    resolve,
+)
 
 CTX = multiprocessing.get_context("spawn")
 
-ENV_BASE_URL = "BABELDOC_WORKBENCH_BASE_URL"
-ENV_API_KEY = "BABELDOC_WORKBENCH_API_KEY"
-ENV_MODEL = "BABELDOC_WORKBENCH_MODEL"
-ENV_REASONING = "BABELDOC_WORKBENCH_REASONING"
-ENV_THINKING = "BABELDOC_WORKBENCH_THINKING"
+# 变量命名以计划书「API 凭据与 .env 约定」为准；括号内为早期命名，仍然兼容
+BASE_URL_NAMES = ("BABELDOC_BASE_URL", "BABELDOC_WORKBENCH_BASE_URL")
+API_KEY_NAMES = ("BABELDOC_API_KEY", "BABELDOC_WORKBENCH_API_KEY")
+MODEL_NAMES = ("BABELDOC_MODEL", "BABELDOC_WORKBENCH_MODEL")
+REASONING_NAMES = ("BABELDOC_REASONING", "BABELDOC_WORKBENCH_REASONING")
+THINKING_NAMES = ("BABELDOC_THINKING", "BABELDOC_WORKBENCH_THINKING")
+LANG_IN_NAMES = ("BABELDOC_LANG_IN",)
+LANG_OUT_NAMES = ("BABELDOC_LANG_OUT",)
+SMOKE_INPUT_NAMES = ("BABELDOC_SMOKE_INPUT",)
+SMOKE_OUTPUT_NAMES = ("BABELDOC_SMOKE_OUTPUT",)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(dotenv: dict[str, str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="BabelDOC 工作台引擎冒烟测试")
-    parser.add_argument("--input", help="待翻译 PDF 路径；缺省时自动生成样例")
-    parser.add_argument("--output", default=".tmp/smoke", help="输出目录")
-    parser.add_argument("--lang-in", default="en")
-    parser.add_argument("--lang-out", default="zh")
+    parser.add_argument(
+        "--input",
+        default=resolve(SMOKE_INPUT_NAMES, dotenv),
+        help="待翻译 PDF 路径；缺省时读取 BABELDOC_SMOKE_INPUT 或自动生成样例",
+    )
+    parser.add_argument(
+        "--output",
+        default=resolve(SMOKE_OUTPUT_NAMES, dotenv) or ".tmp/smoke",
+        help="输出目录",
+    )
+    parser.add_argument("--lang-in", default=resolve(LANG_IN_NAMES, dotenv) or "en")
+    parser.add_argument("--lang-out", default=resolve(LANG_OUT_NAMES, dotenv) or "zh")
     parser.add_argument("--pages", default=None, help="页码范围，例如 1-2")
     parser.add_argument("--qps", type=int, default=4)
     parser.add_argument(
@@ -124,15 +140,15 @@ def ensure_sample_pdf(output_dir: Path) -> Path:
     return sample_path
 
 
-def build_api_config(offline: bool) -> EngineApiConfig:
+def build_api_config(offline: bool, dotenv: dict[str, str]) -> EngineApiConfig:
     if offline:
         return EngineApiConfig(model="offline-stub")
     return EngineApiConfig(
-        model=os.environ.get(ENV_MODEL, ""),
-        base_url=os.environ.get(ENV_BASE_URL) or None,
-        api_key=os.environ.get(ENV_API_KEY) or None,
-        reasoning=os.environ.get(ENV_REASONING) or None,
-        thinking=os.environ.get(ENV_THINKING) or None,
+        model=resolve(MODEL_NAMES, dotenv) or "",
+        base_url=resolve(BASE_URL_NAMES, dotenv) or None,
+        api_key=resolve(API_KEY_NAMES, dotenv) or None,
+        reasoning=resolve(REASONING_NAMES, dotenv) or None,
+        thinking=resolve(THINKING_NAMES, dotenv) or None,
     )
 
 
@@ -155,7 +171,8 @@ def format_event(event: dict) -> str:
 
 
 def main() -> int:
-    args = parse_args()
+    dotenv = load_env_file(REPO_ROOT / DEFAULT_ENV_FILENAME)
+    args = parse_args(dotenv)
     output_dir = (REPO_ROOT / args.output).resolve() if not Path(args.output).is_absolute() else Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -169,13 +186,12 @@ def main() -> int:
         print(f"❌ 找不到输入 PDF：{input_path}")
         return 2
 
-    api = build_api_config(args.offline)
+    api = build_api_config(args.offline, dotenv)
     if not args.offline and not (api.model and api.api_key):
         print(
             "❌ 真实翻译需要 API 配置。请先设置环境变量：\n"
-            f"   $env:{ENV_BASE_URL} = \"https://<你的服务>/v1\"\n"
-            f"   $env:{ENV_API_KEY}  = \"<你的 Key>\"\n"
-            f"   $env:{ENV_MODEL}    = \"<模型名>\"\n"
+            "   Copy-Item env.example .env\n"
+            "   然后填写 BABELDOC_BASE_URL / BABELDOC_MODEL / BABELDOC_API_KEY\n"
             "   或改用 --offline 只验证流程（不调用模型）。"
         )
         return 2
@@ -195,6 +211,14 @@ def main() -> int:
     print(f"输入：{input_path}")
     print(f"输出：{output_dir}")
     print(f"模式：{'离线自检（skip_translation）' if args.offline else '真实翻译'}")
+    if not args.offline:
+        # 只报告来源，绝不打印密钥内容
+        print(
+            "凭据来源："
+            f"Base URL {describe_source(BASE_URL_NAMES, dotenv)}；"
+            f"模型 {describe_source(MODEL_NAMES, dotenv)}；"
+            f"Key {describe_source(API_KEY_NAMES, dotenv)}（不显示值）"
+        )
     print("-" * 60)
 
     parent_conn, child_conn = CTX.Pipe(duplex=True)
