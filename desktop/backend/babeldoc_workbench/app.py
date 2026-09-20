@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -47,7 +48,27 @@ HOST = "127.0.0.1"
 WINDOW_TITLE = "BabelDOC 工作台"
 SELF_CHECK_TITLE = "BabelDOC 工作台 · 环境自检"
 SELF_CHECK_REPORT_NAME = "babeldoc-selfcheck-report.txt"
-TOKEN_EXEMPT_PATHS = frozenset({"/", "/favicon.ico"})
+TOKEN_EXEMPT_PATHS = frozenset({"/", "/favicon.ico", "/selfcheck"})
+TOKEN_EXEMPT_PREFIXES = ("/assets/",)
+FRONTEND_DIST_ENV = "BABELDOC_FRONTEND_DIST"
+
+
+def frontend_dist_dir() -> Path | None:
+    """定位前端构建产物目录；未构建时返回 None（界面回退到自检页）。"""
+    candidates: list[Path] = []
+    override = os.environ.get(FRONTEND_DIST_ENV)
+    if override and override.strip():
+        candidates.append(Path(override.strip()))
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        candidates.append(bundle_root / "frontend_dist")
+        candidates.append(Path(sys.executable).parent / "frontend_dist")
+    else:
+        candidates.append(Path(__file__).resolve().parents[2] / "frontend" / "dist")
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
 
 
 def engine_version() -> str:
@@ -183,9 +204,11 @@ def create_app(
     checks_provider: Callable[[bool], list[CheckResult]],
     session: SessionInfo,
     light_checks_provider: Callable[[], list[CheckResult]] | None = None,
+    frontend_dir: Path | None = None,
 ):
     """构造工作台服务：先做 Host/Origin/令牌校验，再进入路由。"""
     from fastapi import FastAPI, Request
+    from fastapi.staticfiles import StaticFiles
     from fastapi.responses import HTMLResponse, JSONResponse
 
     from babeldoc_workbench.api.settings import router as settings_router
@@ -198,6 +221,15 @@ def create_app(
     app.include_router(files_router)
     app.include_router(tasks_router)
 
+    dist_dir = Path(frontend_dir) if frontend_dir is not None else frontend_dist_dir()
+    if dist_dir is not None and not (dist_dir / "index.html").is_file():
+        # 前端尚未构建：回退到内置自检页面，而不是返回 500
+        dist_dir = None
+    if dist_dir is not None and (dist_dir / "assets").is_dir():
+        app.mount(
+            "/assets", StaticFiles(directory=str(dist_dir / "assets")), name="assets"
+        )
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         if not security.check_host(request.headers.get("host"), session.port):
@@ -206,10 +238,12 @@ def create_app(
         if not security.check_origin(request.headers.get("origin"), session.port):
             logger.warning("拒绝请求：Origin=%s", request.headers.get("origin"))
             return JSONResponse(status_code=403, content={"detail": "请求来源不被允许"})
-        if request.url.path not in TOKEN_EXEMPT_PATHS:
+        path = request.url.path
+        exempt = path in TOKEN_EXEMPT_PATHS or path.startswith(TOKEN_EXEMPT_PREFIXES)
+        if not exempt:
             token = request.headers.get(security.TOKEN_HEADER)
             if not security.tokens_equal(token, session.token):
-                logger.warning("拒绝请求：%s 缺少或携带无效会话令牌", request.url.path)
+                logger.warning("拒绝请求：%s 缺少或携带无效会话令牌", path)
                 return JSONResponse(
                     status_code=403, content={"detail": "缺少或无效的会话令牌"}
                 )
@@ -217,6 +251,12 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
+        if dist_dir is not None:
+            return (dist_dir / "index.html").read_text(encoding="utf-8")
+        return INDEX_HTML
+
+    @app.get("/selfcheck", response_class=HTMLResponse)
+    def selfcheck_page() -> str:
         return INDEX_HTML
 
     @app.get("/api/health")
@@ -246,10 +286,13 @@ def create_app(
     return app
 
 
-def bind_loopback_socket() -> tuple[socket.socket, int]:
-    """绑定一个空闲的回环端口；固定端口既易冲突也不符合“只监听本机”的假设。"""
+def bind_loopback_socket(port: int = 0) -> tuple[socket.socket, int]:
+    """绑定回环端口；默认 0 表示由系统分配空闲端口。
+
+    固定端口只用于开发调试（Vite 代理需要已知端口），产品行为始终是随机端口。
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind((HOST, 0))
+    sock.bind((HOST, int(port)))
     return sock, int(sock.getsockname()[1])
 
 
@@ -327,6 +370,12 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         "--no-window", action="store_true", help="只启动本地服务，不打开窗口"
     )
     parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="本地服务端口；默认 0 表示由系统分配（仅开发调试时指定固定端口）",
+    )
+    parser.add_argument(
         "--report-file", default=None, help="把报告写入指定文件（便于脚本读取）"
     )
     parser.add_argument(
@@ -381,7 +430,7 @@ def run_app(argv: Sequence[str] | None = None) -> int:
 
     try:
         session = SessionInfo(token=security.generate_session_token())
-        sock, port = bind_loopback_socket()
+        sock, port = bind_loopback_socket(args.port)
         session.port = port
         app = create_app(_cache_checks(), session)
         server = start_server(app, sock)

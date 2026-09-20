@@ -1,0 +1,50 @@
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+}
+
+.app-layout {
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #ffffff;
+  border-bottom: 1px solid #f0f0f0;
+  padding: 0 24px;
+}
+
+.app-title {
+  margin: 0 !important;
+}
+
+.app-content {
+  padding: 16px 24px 32px;
+}
+
+.app-hint {
+  margin-bottom: 12px;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.task-progress {
+  min-width: 160px;
+}
+
+.hint-text {
+  color: #8c8c8c;
+  font-size: 12px;
+}

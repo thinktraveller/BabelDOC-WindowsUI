@@ -58,3 +58,8 @@ temp.jpg
 # Local credential file for development and verification
 /.env
 
+# Desktop frontend build artifacts and local dev config
+/desktop/frontend/node_modules/
+/desktop/frontend/dist/
+/desktop/frontend/.env.local
+
