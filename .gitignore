@@ -50,3 +50,8 @@ temp.jpg
 .codex
 .repomap.tags.cache.v1/
 
+# Local documentation and agent guidance
+/docs/
+/project-docs/
+/AGENTS.md
+
