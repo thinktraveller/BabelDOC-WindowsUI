@@ -16,6 +16,13 @@ export function describeErrorDetail(detail: unknown, status: number): string {
         return first ? `${nested.message}：${first}` : nested.message;
       }
     }
+    // FastAPI 的请求校验错误：detail 是数组，元素形如 {loc, msg, type}
+    if (Array.isArray(record.detail) && record.detail.length > 0) {
+      const first = record.detail[0] as { loc?: unknown[]; msg?: string };
+      const field = Array.isArray(first.loc) ? first.loc[first.loc.length - 1] : undefined;
+      const label = field ? `${String(field)}` : "请求数据";
+      return `请求数据不完整（${label}）：${first.msg ?? "校验失败"}。请重新选择文件后重试。`;
+    }
     if (typeof record.message === "string") {
       return record.message;
     }

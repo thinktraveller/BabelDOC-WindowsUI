@@ -29,6 +29,24 @@ interface Props {
   onOpenSettings: () => void;
 }
 
+/**
+ * 取出待导入的真实文件。
+ *
+ * antd 的 ``beforeUpload`` 回调里拿到的是原始文件对象，本身可能是 ``File``；
+ * 只有经历过内部 ``file2Obj`` 的条目才有 ``originFileObj``。两种都要兼容，
+ * 否则会得到空数组并向服务端发出没有文件字段的请求（422）。
+ */
+export function resolvePendingFiles(items: UploadFile[]): File[] {
+  const files: File[] = [];
+  items.forEach((item) => {
+    const candidate = (item.originFileObj ?? item) as unknown;
+    if (candidate instanceof File) {
+      files.push(candidate);
+    }
+  });
+  return files;
+}
+
 const { Dragger } = Upload;
 
 export default function WorkbenchPanel({ onOpenSettings }: Props) {
@@ -205,7 +223,19 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
           accept=".pdf"
           fileList={pendingFiles}
           beforeUpload={(file, fileList) => {
-            setPendingFiles(fileList);
+            // antd 传给 beforeUpload 的是原始文件对象，没有 originFileObj 字段。
+            // 这里显式补齐，否则导入按钮取不到真实 File，上传请求里没有文件字段，
+            // 服务端会返回 422（用户报告过「导入选中文件时显示 HTTP 442/422」）。
+            setPendingFiles(
+              fileList.map((item) => ({
+                uid: item.uid,
+                name: item.name,
+                size: item.size,
+                type: item.type,
+                status: "done" as const,
+                originFileObj: item,
+              })),
+            );
             return false;
           }}
           onRemove={(file) => {
@@ -220,13 +250,14 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
             type="primary"
             disabled={pendingFiles.length === 0}
             loading={importMutation.isPending}
-            onClick={() =>
-              importMutation.mutate(
-                pendingFiles
-                  .map((item) => item.originFileObj as File | undefined)
-                  .filter((file): file is File => Boolean(file)),
-              )
-            }
+            onClick={() => {
+              const files = resolvePendingFiles(pendingFiles);
+              if (files.length === 0) {
+                message.error("没有可导入的文件，请重新选择 PDF。");
+                return;
+              }
+              importMutation.mutate(files);
+            }}
           >
             导入选中文件
           </Button>

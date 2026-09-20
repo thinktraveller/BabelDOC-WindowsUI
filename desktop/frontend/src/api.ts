@@ -130,16 +130,19 @@ export const api = {
     signal?: AbortSignal,
   ) =>
     new Promise<StagedFile[]>((resolve, reject) => {
-      const form = new FormData();
-      files.forEach((file) => form.append("files", file, file.name));
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/files/import");
-      xhr.setRequestHeader(TOKEN_HEADER, sessionToken());
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable && onProgress) {
-          onProgress({ loaded: event.loaded, total: event.total });
-        }
-      };
+      void (async () => {
+        // 与其他接口一致：先等窗口注入会话令牌，避免上传被 403 拒绝
+        const token = await waitForToken();
+        const form = new FormData();
+        files.forEach((file) => form.append("files", file, file.name));
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/files/import");
+        xhr.setRequestHeader(TOKEN_HEADER, token);
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) {
+            onProgress({ loaded: event.loaded, total: event.total });
+          }
+        };
       xhr.onerror = () =>
         reject(new ApiError("上传失败：请确认本地服务仍在运行。", 0));
       xhr.onabort = () => reject(new ApiError("已取消上传。", 0));
@@ -163,6 +166,7 @@ export const api = {
       };
       signal?.addEventListener("abort", () => xhr.abort());
       xhr.send(form);
+      })();
     }),
 
   paramsSchema: () => request<ParamsSchema>("/api/settings/params/schema"),
