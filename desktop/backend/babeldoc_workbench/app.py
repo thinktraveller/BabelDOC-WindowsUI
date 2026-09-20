@@ -23,6 +23,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from babeldoc_workbench import __version__ as APP_VERSION
 from babeldoc_workbench import security
@@ -103,22 +104,30 @@ class SessionInfo:
         }
 
 
-class DesktopBridge:
-    """暴露给页面的最小桌面桥：只提供目录选择（另存成果用）。"""
+# 桌面桥的共享状态。必须放在模块级而不是实例属性上：pywebview 会用
+# ``dir(js_api)`` 递归导出可调用对象，实例属性上挂着 webview.Window 或
+# .NET 控件时递归会无限展开，把整个进程卡死——表现为窗口「未响应」，
+# 而且 pywebview 的 `_pywebviewready` 事件永远不会触发，令牌也就注入不进页面。
+_BRIDGE_STATE: dict[str, Any] = {"window": None, "allow_close": None}
 
-    def __init__(self) -> None:
-        self.window = None
-        self.allow_close = None
+
+class DesktopBridge:
+    """暴露给页面的最小桌面桥：只提供目录选择与关闭确认。
+
+    这个类只能有方法（以及下划线开头的私有成员），不要把窗口或回调对象
+    挂成公开属性。共享状态见 :data:`_BRIDGE_STATE`。
+    """
 
     def choose_directory(self, initial: str | None = None) -> str | None:
         try:
             import webview
         except Exception:  # pragma: no cover - 浏览器模式下没有 pywebview
             return None
-        if self.window is None:
+        window = _BRIDGE_STATE.get("window")
+        if window is None:
             return None
         try:
-            result = self.window.create_file_dialog(
+            result = window.create_file_dialog(
                 webview.FOLDER_DIALOG, directory=initial or ""
             )
         except Exception as exc:  # pragma: no cover - 对话框异常
@@ -132,10 +141,12 @@ class DesktopBridge:
 
     def finish_close(self) -> bool:
         """页面已完成关闭选择，允许窗口真正关闭。"""
-        if self.allow_close is not None:
-            self.allow_close()
-        if self.window is not None:
-            self.window.destroy()
+        allow_close = _BRIDGE_STATE.get("allow_close")
+        if callable(allow_close):
+            allow_close()
+        window = _BRIDGE_STATE.get("window")
+        if window is not None:
+            window.destroy()
         return True
 
 
@@ -531,13 +542,13 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         # 窗口默认展示工作台界面（步骤 6 起 "/" 返回前端构建产物）；
         # 早期版本这里用的是自检页标题，会让用户以为只打开了自检工具。
         window = webview.create_window(WINDOW_TITLE, url, js_api=bridge)
-        bridge.window = window
+        _BRIDGE_STATE["window"] = window
         closing_state = {"decided": False}
 
         def _allow_close() -> None:
             closing_state["decided"] = True
 
-        bridge.allow_close = _allow_close
+        _BRIDGE_STATE["allow_close"] = _allow_close
 
         def on_closing() -> bool:
             """有任务在运行时先让界面询问用户，不静默杀进程。"""
@@ -564,10 +575,11 @@ def run_app(argv: Sequence[str] | None = None) -> int:
         def inject_token() -> None:
             """把令牌注入页面内存（不经过 URL、不落盘）。"""
             payload = json.dumps(session.token)
-            for _ in range(40):
+            for attempt in range(40):
                 time.sleep(0.25)
                 try:
                     window.evaluate_js(f"window.__WORKBENCH_TOKEN__ = {payload};")
+                    logger.info("会话令牌已注入页面（第 %s 次尝试）", attempt + 1)
                     return
                 except Exception:
                     continue

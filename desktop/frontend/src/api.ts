@@ -24,6 +24,46 @@ export function sessionToken(): string {
   return (import.meta.env.VITE_WORKBENCH_TOKEN as string | undefined) ?? "";
 }
 
+/**
+ * 等待窗口注入会话令牌。
+ *
+ * 页面可能在 pywebview 完成注入之前就开始请求，此时请求会被后端以 403
+ * 拒绝，界面看起来像一直卡在加载中。开发模式（Vite）由 VITE_WORKBENCH_TOKEN
+ * 提供令牌，不进入等待。
+ */
+let tokenWaitFailed = false;
+
+async function waitForToken(timeoutMs = 20000): Promise<string> {
+  const devToken = (import.meta.env.VITE_WORKBENCH_TOKEN as string | undefined) ?? "";
+  if (devToken) {
+    return devToken;
+  }
+  const existing = sessionToken();
+  if (existing || tokenWaitFailed) {
+    return existing;
+  }
+  const inDesktopHost = (): boolean =>
+    typeof (window as { pywebview?: unknown }).pywebview !== "undefined";
+  const startedAt = Date.now();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const token = sessionToken();
+    if (token) {
+      return token;
+    }
+    // 普通浏览器里没有 pywebview，也没有注入通道：短暂等待后立即放弃，
+    // 让界面尽快显示"未授权"而不是干等。
+    if (Date.now() - startedAt > 3000 && !inDesktopHost()) {
+      return "";
+    }
+    if (Date.now() >= deadline) {
+      tokenWaitFailed = true;
+      return "";
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;
@@ -37,12 +77,13 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = await waitForToken();
   let response: Response;
   try {
     response = await fetch(path, {
       ...init,
       headers: {
-        [TOKEN_HEADER]: sessionToken(),
+        [TOKEN_HEADER]: token,
         ...(init.headers ?? {}),
       },
     });
