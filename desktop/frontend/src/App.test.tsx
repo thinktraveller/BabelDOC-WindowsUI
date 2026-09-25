@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App as AntApp, ConfigProvider } from "antd";
 import zhCN from "antd/locale/zh_CN";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -33,6 +33,12 @@ describe("工作台界面骨架", () => {
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = String(input);
+        if (url.includes("/api/selfcheck")) {
+          return Promise.resolve(jsonResponse({
+            overall: "ok",
+            checks: [{ key: "runtime", label: "运行时", status: "ok", detail: "可用" }],
+          }));
+        }
         if (url.includes("/api/settings/params/schema")) {
           return Promise.resolve(
             jsonResponse({
@@ -65,7 +71,9 @@ describe("工作台界面骨架", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
+    delete (window as unknown as { __WORKBENCH_TOKEN__?: string }).__WORKBENCH_TOKEN__;
   });
 
   it("渲染标题、标签页与设置入口", async () => {
@@ -86,5 +94,20 @@ describe("工作台界面骨架", () => {
       expect(screen.getAllByText("还没有 API 配置").length).toBeGreaterThan(0);
     });
     expect(screen.getAllByRole("button", { name: /去设置/ }).length).toBeGreaterThan(0);
+  });
+
+  it("在当前窗口请求环境自检并携带会话令牌", async () => {
+    (window as unknown as { __WORKBENCH_TOKEN__?: string }).__WORKBENCH_TOKEN__ = "test-token";
+    renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "环境自检" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("总体结论：通过")).toBeTruthy();
+    });
+    expect(screen.getByText("运行时")).toBeTruthy();
+    const requests = vi.mocked(fetch).mock.calls;
+    const selfCheckRequest = requests.find(([path]) => String(path) === "/api/selfcheck");
+    expect(selfCheckRequest).toBeDefined();
+    expect(selfCheckRequest?.[1]?.headers).toMatchObject({ "X-Workbench-Token": "test-token" });
   });
 });

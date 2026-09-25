@@ -1,7 +1,7 @@
 import { Alert, App as AntApp, Button, Layout, Modal, Space, Tabs, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 
-import { api } from "./api";
+import { api, type SelfCheckResult } from "./api";
 import SettingsDrawer from "./components/SettingsDrawer";
 import GlossaryPanel from "./components/GlossaryPanel";
 import TasksPanel from "./components/TasksPanel";
@@ -15,6 +15,23 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("workbench");
   const [closingOpen, setClosingOpen] = useState(false);
   const [closingBusy, setClosingBusy] = useState<string | null>(null);
+  const [selfCheckOpen, setSelfCheckOpen] = useState(false);
+  const [selfCheckLoading, setSelfCheckLoading] = useState(false);
+  const [selfCheckResult, setSelfCheckResult] = useState<SelfCheckResult | null>(null);
+  const [selfCheckError, setSelfCheckError] = useState("");
+
+  const openSelfCheck = async () => {
+    setSelfCheckOpen(true);
+    setSelfCheckLoading(true);
+    setSelfCheckError("");
+    try {
+      setSelfCheckResult(await api.selfCheck());
+    } catch (error) {
+      setSelfCheckError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSelfCheckLoading(false);
+    }
+  };
 
   useEffect(() => {
     (window as unknown as { __WORKBENCH_ON_CLOSE__?: () => void }).__WORKBENCH_ON_CLOSE__ =
@@ -86,7 +103,7 @@ export default function App() {
           <Tag color="blue">本地运行</Tag>
         </Space>
         <Space>
-          <Button href="/selfcheck" target="_blank">
+          <Button onClick={openSelfCheck}>
             环境自检
           </Button>
           <Button type="primary" onClick={() => setSettingsOpen(true)}>
@@ -116,6 +133,33 @@ export default function App() {
         />
       </Content>
       <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <Modal
+        open={selfCheckOpen}
+        title="环境自检"
+        onCancel={() => setSelfCheckOpen(false)}
+        footer={<Button onClick={() => setSelfCheckOpen(false)}>关闭</Button>}
+        width={760}
+      >
+        {selfCheckLoading && <p>正在检查…</p>}
+        {selfCheckError && <Alert type="error" message={`读取自检结果失败：${selfCheckError}`} />}
+        {!selfCheckLoading && selfCheckResult && !selfCheckError && (
+          <>
+            <p>总体结论：{selfCheckResult.overall === "ok" ? "通过" : selfCheckResult.overall === "warn" ? "注意" : "失败"}</p>
+            <table>
+              <thead><tr><th>检查项</th><th>状态</th><th>详情</th></tr></thead>
+              <tbody>
+                {selfCheckResult.checks.map((item) => (
+                  <tr key={item.key}>
+                    <td>{item.label}</td>
+                    <td>{item.status === "ok" ? "通过" : item.status === "warn" ? "注意" : "失败"}</td>
+                    <td>{item.detail}{item.hint && <div>{item.hint}</div>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </Modal>
       <Modal
         open={closingOpen}
         title="还有任务正在运行"

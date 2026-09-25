@@ -14,6 +14,17 @@ import { describeErrorDetail } from "./errors";
 
 export const TOKEN_HEADER = "X-Workbench-Token";
 
+export interface SelfCheckResult {
+  overall: "ok" | "warn" | "fail";
+  checks: {
+    key: string;
+    label: string;
+    status: "ok" | "warn" | "fail";
+    detail: string;
+    hint?: string;
+  }[];
+}
+
 /** 会话令牌：生产环境由窗口注入内存，开发环境用 VITE_WORKBENCH_TOKEN。 */
 export function sessionToken(): string {
   const injected = (window as unknown as { __WORKBENCH_TOKEN__?: string })
@@ -118,6 +129,7 @@ export interface ImportProgress {
 
 export const api = {
   health: () => request<Record<string, unknown>>("/api/health"),
+  selfCheck: () => request<SelfCheckResult>("/api/selfcheck"),
 
   listFiles: () => request<{ items: StagedFile[] }>("/api/files"),
   deleteFile: (fileId: string) =>
