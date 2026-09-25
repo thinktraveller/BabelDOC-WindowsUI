@@ -9,7 +9,12 @@
 
 import os
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_delvewheel_libs_directory,
+    collect_submodules,
+    copy_metadata,
+)
 
 SPEC_DIR = os.path.abspath(SPECPATH)  # noqa: F821 - PyInstaller 注入
 PROJECT_ROOT = os.path.abspath(os.path.join(SPEC_DIR, "..", ".."))
@@ -27,6 +32,12 @@ for package in ("babeldoc", "onnxruntime", "tiktoken", "pymupdf", "cv2", "hypers
     datas += package_datas
     binaries += package_binaries
     hiddenimports += package_hidden
+
+# hyperscan 的 Windows wheel 把 _hs_ext 依赖的 DLL 放在包目录旁的
+# hyperscan.libs；collect_all("hyperscan") 不会扫描这个同级目录。
+datas, binaries = collect_delvewheel_libs_directory(
+    "hyperscan", datas=datas, binaries=binaries
+)
 
 hiddenimports += collect_submodules("babeldoc.docvision")
 # 工作进程入口通过 multiprocessing 目标函数引用，静态分析看不到，必须显式收集

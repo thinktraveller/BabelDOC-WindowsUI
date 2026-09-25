@@ -362,6 +362,7 @@ def _probe_worker_entry(conn) -> None:
     try:
         import onnxruntime
 
+        from babeldoc.glossary import Glossary  # noqa: F401 - 导入 hyperscan 原生扩展
         from babeldoc_workbench.engine.adapter import build_config  # noqa: F401
 
         payload["ok"] = True
