@@ -6,7 +6,8 @@
     .\\.venv\\Scripts\\python.exe desktop\\packaging\\build_portable.py --resources <离线资源包>
 
 产物：``release\\BabelDOC-portable\\``，含
-``BabelDOC.exe``、``_internal\\``、``frontend_dist\\``、``使用说明.md`` 与 ``校验值.sha256``。
+``BabelDOC.exe``、``_internal\\``、``frontend_dist\\``、``licenses\\``、
+``使用说明.md`` 与 ``校验值.sha256``。
 """
 
 from __future__ import annotations
@@ -76,6 +77,14 @@ def main() -> int:
         source = PACKAGING_DIR / name
         if source.is_file():
             shutil.copyfile(source, target / name)
+
+    licenses_dir = target / "licenses"
+    licenses_dir.mkdir(exist_ok=True)
+    shutil.copyfile(REPO_ROOT / "LICENSE", licenses_dir / "BabelDOC-AGPL-3.0.txt")
+    shutil.copyfile(
+        REPO_ROOT / "babeldoc" / "pdfminer" / "LICENSE",
+        licenses_dir / "pdfminer-MIT.txt",
+    )
 
     if args.resources:
         source = Path(args.resources).expanduser()
