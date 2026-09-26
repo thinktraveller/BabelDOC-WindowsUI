@@ -39,6 +39,9 @@ class PresetPayload(BaseModel):
 
 class AppSettingsPayload(BaseModel):
     default_output_dir: str | None = None
+    default_mono_output_dir: str | None = None
+    default_dual_output_dir: str | None = None
+    default_glossary_output_dir: str | None = None
     retention_days: int | None = None
     log_level: str | None = None
 

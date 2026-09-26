@@ -257,6 +257,8 @@ export const api = {
     }),
   revealTask: (id: number) =>
     request<{ path: string }>(`/api/tasks/${id}/reveal`, { method: "POST" }),
+  revealOutput: (id: number, kind: string) =>
+    request<{ path: string }>(`/api/tasks/${id}/outputs/${kind}/reveal`, { method: "POST" }),
   openOutput: (id: number, kind: string) =>
     request<{ path: string }>(`/api/tasks/${id}/outputs/${kind}/open`, { method: "POST" }),
   saveOutputAs: (id: number, kind: string, targetDir: string) =>
@@ -270,11 +272,11 @@ export const api = {
     ),
 
   getAppSettings: () =>
-    request<{ default_output_dir: string; retention_days: number; log_level: string }>(
+    request<{ default_output_dir: string; default_mono_output_dir: string; default_dual_output_dir: string; default_glossary_output_dir: string; retention_days: number; log_level: string }>(
       "/api/settings/app",
     ),
   updateAppSettings: (patch: Record<string, unknown>) =>
-    request<{ default_output_dir: string; retention_days: number; log_level: string }>(
+    request<{ default_output_dir: string; default_mono_output_dir: string; default_dual_output_dir: string; default_glossary_output_dir: string; retention_days: number; log_level: string }>(
       "/api/settings/app",
       {
         method: "PUT",

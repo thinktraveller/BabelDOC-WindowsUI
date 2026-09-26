@@ -43,6 +43,9 @@ export default function SettingsDrawer({ open, onClose }: Props) {
   const [form] = Form.useForm<ProfileFormValues>();
   const [appForm] = Form.useForm<{
     default_output_dir: string;
+    default_mono_output_dir: string;
+    default_dual_output_dir: string;
+    default_glossary_output_dir: string;
     retention_days: number;
     log_level: string;
   }>();
@@ -289,21 +292,29 @@ export default function SettingsDrawer({ open, onClose }: Props) {
         onFinish={(values) => saveAppSettingsMutation.mutate(values)}
         style={{ rowGap: 8, marginBottom: 8 }}
       >
-        <Form.Item name="default_output_dir" label="默认输出目录">
-          <Input style={{ width: 320 }} placeholder="留空表示每次另存时再选择" />
-        </Form.Item>
-        <Form.Item>
-          <Button
-            onClick={async () => {
-              const directory = await chooseDirectory(appForm.getFieldValue("default_output_dir"));
-              if (directory) {
-                appForm.setFieldValue("default_output_dir", directory);
-              }
-            }}
-          >
-            选择目录
-          </Button>
-        </Form.Item>
+        {([
+          ["default_mono_output_dir", "单语 PDF 默认位置"],
+          ["default_dual_output_dir", "双语 PDF 默认位置"],
+          ["default_glossary_output_dir", "术语 CSV 默认位置"],
+        ] as const).map(([field, label]) => (
+          <Space key={field} size={8} wrap>
+            <Form.Item name={field} label={label}>
+              <Input style={{ width: 320 }} placeholder="留空则只保存在应用任务目录" />
+            </Form.Item>
+            <Form.Item>
+              <Button
+                onClick={async () => {
+                  const directory = await chooseDirectory(appForm.getFieldValue(field));
+                  if (directory) {
+                    appForm.setFieldValue(field, directory);
+                  }
+                }}
+              >
+                选择目录
+              </Button>
+            </Form.Item>
+          </Space>
+        ))}
         <Form.Item name="retention_days" label="成果保留天数">
           <Input type="number" min={0} style={{ width: 120 }} />
         </Form.Item>
@@ -323,7 +334,7 @@ export default function SettingsDrawer({ open, onClose }: Props) {
         </Form.Item>
       </Form>
       <span className="hint-text">
-        保留天数设为 0 表示不自动清理；成果文件只会由你手动删除。
+        任务完成后按三类目录分别复制成果；留空的类别只保存在应用任务目录。旧版默认目录已显示在对应输入框中，可分别修改或清空。应用管理的原件与任务日志仍保存在任务目录。保留天数设为 0 表示不自动清理。
       </span>
       <div style={{ marginTop: 8 }}>
         <Button loading={diagnosticsMutation.isPending} onClick={() => diagnosticsMutation.mutate()}>

@@ -32,6 +32,7 @@ from babeldoc_workbench.models import (
 from babeldoc_workbench.services import (
     api_profiles,
     glossaries,
+    lifecycle,
     task_store,
     worker_registry,
 )
@@ -47,6 +48,8 @@ logger = logging.getLogger(__name__)
 TASK_SUBDIRS = ("input", "work", "output", "logs")
 SKIP_TRANSLATION_ENV = "BABELDOC_ALLOW_SKIP_TRANSLATION"
 SKIP_TRANSLATION_KEY = "skip_translation"
+USER_OUTPUT_DIR_KEY = "_user_output_dir"
+USER_OUTPUT_DIRS_KEY = "_user_output_dirs"
 
 
 def allow_skip_translation() -> bool:
@@ -288,6 +291,25 @@ class TaskQueue:
             item for item in outputs if item["kind"] in {"mono", "dual"} and item["exists"]
         ]
         if summary.finished and produced:
+            user_output_dirs = snapshot.get(USER_OUTPUT_DIRS_KEY)
+            if not isinstance(user_output_dirs, dict) and snapshot.get(USER_OUTPUT_DIR_KEY):
+                user_output_dirs = {
+                    kind: snapshot[USER_OUTPUT_DIR_KEY] for kind in lifecycle.RESULT_KINDS
+                }
+            if user_output_dirs:
+                try:
+                    exported = lifecycle.export_copies(
+                        task, outputs,
+                        {kind: Path(path) for kind, path in user_output_dirs.items()
+                         if kind in lifecycle.RESULT_KINDS and isinstance(path, str)},
+                    )
+                except Exception as exc:  # noqa: BLE001 - 导出失败不得把已完成的翻译改成失败
+                    logger.exception("任务 %s 的默认目录导出失败", task.id)
+                    exported = {
+                        "items": [],
+                        "errors": [f"导出失败：{type(exc).__name__}: {exc}"],
+                    }
+                self._append_event(task, "exported", exported)
             task.engine_version = task.engine_version or _engine_version()
             task_store.mark_succeeded(task)
             self._append_event(

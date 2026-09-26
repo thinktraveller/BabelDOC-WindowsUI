@@ -1,4 +1,4 @@
-import { Alert, App as AntApp, Button, Layout, Modal, Space, Tabs, Tag, Typography } from "antd";
+import { Alert, App as AntApp, Button, Grid, Layout, Modal, Space, Tabs, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 
 import { api, type SelfCheckResult } from "./api";
@@ -11,6 +11,7 @@ const { Header, Content } = Layout;
 
 export default function App() {
   const { message } = AntApp.useApp();
+  const screens = Grid.useBreakpoint();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("workbench");
   const [closingOpen, setClosingOpen] = useState(false);
@@ -112,13 +113,9 @@ export default function App() {
         </Space>
       </Header>
       <Content className="app-content">
-        <Alert
-          type="info"
-          showIcon
-          className="app-hint"
-          message="所有文件与任务都保存在本机；取消任务表示停止本次翻译，不是暂停续译。"
-        />
         <Tabs
+          className="app-tabs"
+          tabPosition={screens.md === false ? "top" : "left"}
           activeKey={activeTab}
           onChange={setActiveTab}
           items={[

@@ -86,6 +86,7 @@ describe("工作台界面骨架", () => {
     expect(screen.getAllByText("任务与文件").length).toBeGreaterThan(0);
     expect(screen.getAllByText("术语表").length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: /设置/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/所有文件与任务都保存在本机/)).toBeNull();
   });
 
   it("没有 API 配置时提示先去设置，而不是直接提交", async () => {

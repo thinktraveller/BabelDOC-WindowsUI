@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from babeldoc_workbench.engine.adapter import (
+    build_config,
     error_event,
     finish_payload,
     to_event,
@@ -32,10 +33,53 @@ def test_request_roundtrip() -> None:
         output_dir="C:/tmp/out",
         glossary_files=("a.csv", "b.csv"),
         qps=8,
+        dual_translate_first=True,
+        primary_font_family="serif",
+        only_include_translated_page=True,
+        min_text_length=7,
+        disable_rich_text_translate=True,
     )
     restored = EngineJobRequest.from_dict(request.to_dict())
     assert restored == request
     assert isinstance(restored.glossary_files, tuple)
+
+
+def test_bilingual_order_reaches_translation_config(monkeypatch, tmp_path: Path) -> None:
+    from babeldoc_workbench.engine import adapter
+
+    monkeypatch.setattr(adapter, "set_translate_rate_limiter", lambda _qps: None)
+    monkeypatch.setattr(adapter.DocLayoutModel, "load_available", lambda: object())
+    monkeypatch.setattr(adapter, "TranslationConfig", lambda **kwargs: kwargs)
+    request = EngineJobRequest(
+        job_id="dual-order",
+        input_path=str(tmp_path / "input.pdf"),
+        output_dir=str(tmp_path),
+        dual_translate_first=True,
+        use_alternating_pages_dual=True,
+        skip_translation=True,
+    )
+    config = build_config(request, EngineApiConfig(model="offline-stub"), tmp_path)
+    assert config["dual_translate_first"] is True
+    assert config["use_alternating_pages_dual"] is True
+
+
+def test_new_advanced_options_reach_translation_config(monkeypatch, tmp_path: Path) -> None:
+    from babeldoc_workbench.engine import adapter
+
+    monkeypatch.setattr(adapter, "set_translate_rate_limiter", lambda _qps: None)
+    monkeypatch.setattr(adapter.DocLayoutModel, "load_available", lambda: object())
+    monkeypatch.setattr(adapter, "TranslationConfig", lambda **kwargs: kwargs)
+    request = EngineJobRequest(
+        job_id="advanced", input_path=str(tmp_path / "input.pdf"),
+        output_dir=str(tmp_path), pages="1-2", primary_font_family="sans-serif",
+        only_include_translated_page=True, min_text_length=8,
+        disable_rich_text_translate=True, skip_translation=True,
+    )
+    config = build_config(request, EngineApiConfig(model="offline-stub"), tmp_path)
+    assert config["primary_font_family"] == "sans-serif"
+    assert config["only_include_translated_page"] is True
+    assert config["min_text_length"] == 8
+    assert config["disable_rich_text_translate"] is True
 
 
 def test_request_rejects_unknown_field() -> None:

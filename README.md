@@ -1,3 +1,5 @@
+> **本地 Windows 工作台修改版**：本分支基于 [funstory-ai/BabelDOC](https://github.com/funstory-ai/BabelDOC) 增加 `desktop/` 下的中文 Windows PDF 翻译工作台。下方为保留的上游 README；其中 PyPI、在线服务及社区链接介绍的是上游项目，不代表本修改版的发布状态。本仓库保留上游署名和 [AGPL-3.0 许可证](LICENSE)，`babeldoc/pdfminer/` 的独立 [MIT 许可](babeldoc/pdfminer/LICENSE) 亦保持原样。
+
 <div align="center">
 
 <br/>

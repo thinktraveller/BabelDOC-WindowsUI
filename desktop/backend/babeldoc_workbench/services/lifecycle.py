@@ -16,6 +16,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Mapping
 
 from babeldoc_workbench.models import Task
 from babeldoc_workbench.services import task_store
@@ -139,6 +140,29 @@ def output_path(task: Task, kind: str, *, require_exists: bool = True) -> Path:
     raise LifecycleError("该任务没有此类成果文件")
 
 
+def reveal_output_path(task: Task, kind: str) -> Path:
+    """优先定位已导出的用户副本；没有副本时定位应用管理原件。"""
+    output = next(
+        (item for item in task_store.outputs_of(task) if item["kind"] == kind), None
+    )
+    if output is None:
+        raise LifecycleError("该任务没有此类成果文件")
+    source = Path(output["path"])
+    if kind in RESULT_KINDS:
+        for event in reversed(task_store.recent_events(task.id)):
+            if event["type"] != "exported":
+                continue
+            for item in event["payload"].get("items", []):
+                if item.get("kind") == kind and item.get("source") == str(source):
+                    exported = Path(item["path"])
+                    if exported.is_file():
+                        return exported
+            break
+    if source.is_file():
+        return source
+    raise LifecycleError("文件不存在或被移动，可重新执行该任务")
+
+
 def _shell_open(path: Path, *, select: bool = False) -> None:
     if not sys.platform.startswith("win"):
         raise LifecycleError("当前平台暂不支持直接打开文件")
@@ -185,3 +209,42 @@ def save_copy(task: Task, kind: str, target_dir: str | Path) -> dict:
         "target": str(destination),
         "size": destination.stat().st_size,
     }
+
+
+def export_copies(task: Task, outputs: list[dict], target_dirs: Mapping[str, Path]) -> dict:
+    """成功任务的用户副本；同名文件不覆盖，单项复制失败不改变任务成功状态。"""
+    items: list[dict] = []
+    errors: list[str] = []
+    for output in outputs:
+        kind = output["kind"]
+        if kind not in RESULT_KINDS or not output["exists"] or kind not in target_dirs:
+            continue
+        directory = target_dirs[kind].expanduser()
+        source = Path(output["path"])
+        if not directory.is_dir():
+            errors.append(f"{source.name}：默认输出目录不存在：{directory}")
+            continue
+        for number in range(1000):
+            suffix = "" if number == 0 else f"-任务{task.id}" + (f"-{number}" if number > 1 else "")
+            target = directory / f"{source.stem}{suffix}{source.suffix}"
+            created = False
+            try:
+                with target.open("xb") as destination:
+                    created = True
+                    with source.open("rb") as origin:
+                        shutil.copyfileobj(origin, destination)
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                if created:
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("无法清理未写完的导出文件：%s", target)
+                errors.append(f"{source.name}：{exc}")
+                break
+            items.append({"kind": kind, "source": str(source), "path": str(target)})
+            break
+        else:
+            errors.append(f"{source.name}：同名文件过多，无法生成新文件名")
+    return {"items": items, "errors": errors}

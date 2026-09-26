@@ -160,12 +160,16 @@ export default function TasksPanel() {
     onError: (error) => message.error(describeError(error)),
   });
   const revealMutation = useMutation({
-    mutationFn: api.revealTask,
+    mutationFn: ({ id, kind }: { id: number; kind: string }) => api.revealOutput(id, kind),
     onError: (error) => message.error(describeError(error)),
   });
   const saveAsMutation = useMutation({
     mutationFn: async ({ id, kind }: { id: number; kind: string }) => {
-      const directory = await chooseDirectory(null);
+      const settings = await api.getAppSettings();
+      const configured = kind === "mono" ? settings.default_mono_output_dir
+        : kind === "dual" ? settings.default_dual_output_dir
+          : kind === "glossary" ? settings.default_glossary_output_dir : "";
+      const directory = await chooseDirectory(configured);
       if (!directory) {
         throw new Error("已取消另存");
       }
@@ -180,6 +184,14 @@ export default function TasksPanel() {
     queryFn: () => api.taskFiles(detailId as number),
     enabled: detailId !== null,
   });
+
+  const exportEvent = [...(detail?.events ?? [])].reverse().find((event) => event.type === "exported");
+  const exportItems = Array.isArray(exportEvent?.payload.items)
+    ? exportEvent.payload.items as { kind: string; source: string; path: string }[]
+    : [];
+  const exportErrors = Array.isArray(exportEvent?.payload.errors)
+    ? exportEvent.payload.errors as string[]
+    : [];
 
   const columns: ColumnsType<TaskInfo> = [
     { title: "任务", dataIndex: "id", width: 80, render: (id: number) => `#${id}` },
@@ -333,6 +345,11 @@ export default function TasksPanel() {
               )}
             </Descriptions>
             <Typography.Title level={5}>成果文件</Typography.Title>
+            {exportErrors.length > 0 && (
+              <Typography.Text type="warning">
+                默认目录导出未全部完成：{exportErrors.join("；")}。可用「另存为」补存。
+              </Typography.Text>
+            )}
             {detail.outputs.length === 0 && <span className="hint-text">暂无成果</span>}
             {detail.outputs.map((output) => (
               <div key={output.path} style={{ marginBottom: 6 }}>
@@ -352,14 +369,19 @@ export default function TasksPanel() {
                       >
                         另存为
                       </Button>
-                      <Button size="small" onClick={() => revealMutation.mutate(detail.id)}>
+                      <Button size="small" onClick={() => revealMutation.mutate({ id: detail.id, kind: output.kind })}>
                         在文件夹中显示
                       </Button>
                       <span className="hint-text">{formatSize(output.size)}</span>
                     </>
                   ) : (
                     <>
-                      <Typography.Text type="danger">文件不存在或被移动</Typography.Text>
+                      <Typography.Text type="danger">应用管理原件不存在或被移动</Typography.Text>
+                      {exportItems.some((item) => item.kind === output.kind && item.source === output.path) && (
+                        <Button size="small" onClick={() => revealMutation.mutate({ id: detail.id, kind: output.kind })}>
+                          在文件夹中显示副本
+                        </Button>
+                      )}
                       <Button
                         size="small"
                         onClick={() => rerunMutation.mutate(detail.id)}
@@ -370,8 +392,13 @@ export default function TasksPanel() {
                   )}
                 </Space>
                 <div className="hint-text" style={{ wordBreak: "break-all" }}>
-                  {output.path}
+                  应用管理原件：{output.path}
                 </div>
+                {exportItems.filter((item) => item.source === output.path).map((item) => (
+                  <div key={item.path} className="hint-text" style={{ wordBreak: "break-all" }}>
+                    默认输出目录副本：{item.path}
+                  </div>
+                ))}
               </div>
             ))}
             <Typography.Title level={5}>文件管理</Typography.Title>

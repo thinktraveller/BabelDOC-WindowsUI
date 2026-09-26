@@ -5,8 +5,10 @@ React + TypeScript + Vite；生产环境的静态产物由后端挂载（`deskto
 
 ## 安装依赖
 
+以下命令从仓库根目录开始执行。
+
 ```powershell
-cd D:\Done\BabelDOC\desktop\frontend
+cd desktop\frontend
 npm install
 ```
 
@@ -33,7 +35,7 @@ npm test           # vitest 单元测试
 1. 启动后端并固定端口（仅开发用，产品默认随机端口）：
 
    ```powershell
-   cd D:\Done\BabelDOC
+   # 在仓库根目录执行
    .\.venv\Scripts\python.exe -m babeldoc_workbench.main --no-window --port 8765
    ```
 

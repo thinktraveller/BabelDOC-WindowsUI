@@ -24,6 +24,53 @@ VALIDATION_ERROR_CODE = "invalid_params"
 
 LANGUAGE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,15}$")
 
+# 引擎 CLI 不限定语言枚举，以下仅是工作台提供的常用代码。模型能否翻译某种语言
+# 取决于用户选择的服务；历史预设中的其它合法代码仍由校验器接受。
+LANGUAGE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("en", "英语 (en)"),
+    ("zh", "中文 (zh)"),
+    ("zh-cn", "简体中文 (zh-cn)"),
+    ("zh-tw", "繁体中文 (zh-tw)"),
+    ("zh-hans", "简体中文 (zh-hans)"),
+    ("zh-hant", "繁体中文 (zh-hant)"),
+    ("ja", "日语 (ja)"),
+    ("ko", "韩语 (ko)"),
+    ("fr", "法语 (fr)"),
+    ("de", "德语 (de)"),
+    ("es", "西班牙语 (es)"),
+    ("it", "意大利语 (it)"),
+    ("pt", "葡萄牙语 (pt)"),
+    ("ru", "俄语 (ru)"),
+    ("ar", "阿拉伯语 (ar)"),
+    ("hi", "印地语 (hi)"),
+    ("uk", "乌克兰语 (uk)"),
+    ("vi", "越南语 (vi)"),
+    ("th", "泰语 (th)"),
+    ("id", "印度尼西亚语 (id)"),
+)
+WATERMARK_MODE_LABELS = {
+    "watermarked": "添加水印",
+    "no_watermark": "不添加水印",
+    "both": "同时输出两种版本",
+}
+WATERMARK_OPTIONS = tuple(
+    (mode, WATERMARK_MODE_LABELS[mode]) for mode in WATERMARK_MODES
+)
+OUTPUT_MODE_OPTIONS = (
+    ("both", "同时输出单语与双语"),
+    ("mono", "仅输出单语"),
+    ("dual", "仅输出双语"),
+)
+OUTPUT_MODES = frozenset(value for value, _label in OUTPUT_MODE_OPTIONS)
+FONT_FAMILY_OPTIONS = (
+    ("auto", "自动选择"),
+    ("serif", "衬线字体"),
+    ("sans-serif", "无衬线字体"),
+    ("script", "手写／斜体字体"),
+)
+FONT_FAMILIES = frozenset(value for value, _label in FONT_FAMILY_OPTIONS)
+LEGACY_OUTPUT_KEYS = frozenset({"no_mono", "no_dual"})
+
 
 @dataclass(frozen=True)
 class ParamSpec:
@@ -34,29 +81,47 @@ class ParamSpec:
     default: Any
     engine_field: str
     hint: str = ""
+    options: tuple[tuple[str, str], ...] = ()
 
 
 PARAM_SPECS: tuple[ParamSpec, ...] = (
     ParamSpec(
-        "lang_in", "common", "源语言", "str", DEFAULT_LANG_IN, "lang_in", "例如 en"
+        "lang_in", "common", "源语言", "choice", DEFAULT_LANG_IN, "lang_in",
+        "常用语言代码；引擎还接受其它代码，旧预设可继续使用", LANGUAGE_OPTIONS,
     ),
     ParamSpec(
         "lang_out",
         "common",
         "目标语言",
-        "str",
+        "choice",
         DEFAULT_LANG_OUT,
         "lang_out",
-        "例如 zh，会影响输出文件名",
+        "常用语言代码；会影响输出文件名和术语版本筛选",
+        LANGUAGE_OPTIONS,
     ),
     ParamSpec(
         "pages", "common", "页码范围", "pages", None, "pages", "例如 1-5,8；留空表示全部"
     ),
+    ParamSpec(
+        "output_mode", "common", "输出类型", "choice", "both", "output_mode",
+        "至少输出一种 PDF", OUTPUT_MODE_OPTIONS,
+    ),
+    # 旧任务和预设继续接受这两个字段；界面统一使用 output_mode。
     ParamSpec("no_mono", "common", "不输出单语", "bool", False, "no_mono"),
     ParamSpec("no_dual", "common", "不输出双语", "bool", False, "no_dual"),
     ParamSpec(
+        "dual_original_position",
+        "advanced",
+        "双语原文位置",
+        "choice",
+        "left",
+        "dual_translate_first",
+        "同页对照：原文在左/右；交替页：原文先/后",
+        (("left", "左侧（交替页时在前）"), ("right", "右侧（交替页时在后）")),
+    ),
+    ParamSpec(
         "use_alternating_pages_dual",
-        "common",
+        "advanced",
         "双语排列为交替页",
         "bool",
         False,
@@ -64,11 +129,11 @@ PARAM_SPECS: tuple[ParamSpec, ...] = (
         "默认同页对照",
     ),
     ParamSpec(
-        "auto_extract_glossary", "common", "自动提取术语", "bool", True, "auto_extract_glossary"
+        "auto_extract_glossary", "advanced", "自动提取术语", "bool", True, "auto_extract_glossary"
     ),
     ParamSpec(
         "glossary_version_id",
-        "common",
+        "advanced",
         "使用术语版本",
         "glossary",
         None,
@@ -103,6 +168,22 @@ PARAM_SPECS: tuple[ParamSpec, ...] = (
         "不填则不分片",
     ),
     ParamSpec(
+        "primary_font_family", "advanced", "译文字体风格", "choice", "auto",
+        "primary_font_family", "不指定时由引擎自动选择", FONT_FAMILY_OPTIONS,
+    ),
+    ParamSpec(
+        "only_include_translated_page", "advanced", "仅保留所选翻译页", "bool", False,
+        "only_include_translated_page", "只在设置页码范围时生效",
+    ),
+    ParamSpec(
+        "min_text_length", "advanced", "最短翻译文本长度", "int", 5,
+        "min_text_length", "短于此字符数的文本不翻译；引擎默认 5",
+    ),
+    ParamSpec(
+        "disable_rich_text_translate", "advanced", "关闭富文本翻译", "bool", False,
+        "disable_rich_text_translate", "兼容性选项，可能减少译文格式保留",
+    ),
+    ParamSpec(
         "custom_system_prompt", "advanced", "自定义提示词", "str", None, "custom_system_prompt"
     ),
     ParamSpec(
@@ -117,10 +198,11 @@ PARAM_SPECS: tuple[ParamSpec, ...] = (
         "watermark_output_mode",
         "advanced",
         "水印输出模式",
-        "str",
+        "choice",
         DEFAULT_WATERMARK_MODE,
         "watermark_output_mode",
-        "取值：watermarked / no_watermark / both",
+        "控制译文 PDF 的水印输出",
+        WATERMARK_OPTIONS,
     ),
 )
 
@@ -155,8 +237,12 @@ def schema_for_ui() -> list[dict[str, Any]]:
             "type": spec.type,
             "default": spec.default,
             "hint": spec.hint,
+            "options": [
+                {"value": value, "label": label} for value, label in spec.options
+            ],
         }
         for spec in PARAM_SPECS
+        if spec.key not in LEGACY_OUTPUT_KEYS
     ]
 
 
@@ -223,6 +309,11 @@ def _check_language(value: Any, key: str, errors: dict[str, str]) -> str:
     return text
 
 
+def _normalized_language(value: Any) -> str:
+    """与引擎术语 CSV 的语言比较规则保持一致。"""
+    return str(value or "").strip().lower().replace("-", "_")
+
+
 def validate_params(
     params: Mapping[str, Any],
     *,
@@ -268,14 +359,31 @@ def validate_params(
                     )
             normalized["pages"] = str(pages_value).strip()
 
-    normalized["no_mono"] = bool(normalized.get("no_mono"))
-    normalized["no_dual"] = bool(normalized.get("no_dual"))
-    if normalized["no_mono"] and normalized["no_dual"]:
-        errors["no_dual"] = "不能同时关闭单语与双语输出，至少要保留一种"
+    legacy_no_mono = bool(normalized.get("no_mono"))
+    legacy_no_dual = bool(normalized.get("no_dual"))
+    if "output_mode" in params:
+        output_mode = normalized.get("output_mode")
+        if output_mode not in OUTPUT_MODES:
+            errors["output_mode"] = (
+                "旧预设同时关闭了单语与双语，请重新选择输出类型"
+                if output_mode == "legacy-invalid"
+                else "请选择同时输出、仅单语或仅双语"
+            )
+    else:
+        if legacy_no_mono and legacy_no_dual:
+            errors["no_dual"] = "不能同时关闭单语与双语输出，至少要保留一种"
+        output_mode = "dual" if legacy_no_mono else "mono" if legacy_no_dual else "both"
+    if output_mode in OUTPUT_MODES:
+        normalized["output_mode"] = output_mode
+        normalized["no_mono"] = output_mode == "dual"
+        normalized["no_dual"] = output_mode == "mono"
 
     normalized["use_alternating_pages_dual"] = bool(
         normalized.get("use_alternating_pages_dual")
     )
+    position = normalized.get("dual_original_position")
+    if position not in ("left", "right"):
+        errors["dual_original_position"] = "请选择原文在左侧或右侧"
     normalized["auto_extract_glossary"] = bool(normalized.get("auto_extract_glossary"))
 
     normalized["qps"] = _check_positive_int(
@@ -289,6 +397,23 @@ def validate_params(
     )
     normalized["max_pages_per_part"] = _check_positive_int(
         normalized.get("max_pages_per_part"), "max_pages_per_part", errors
+    )
+    normalized["min_text_length"] = _check_positive_int(
+        normalized.get("min_text_length"), "min_text_length", errors, allow_none=False
+    )
+    font_family = normalized.get("primary_font_family")
+    if font_family is None:
+        font_family = "auto"  # 已有预设可能没有这一字段
+    if font_family not in FONT_FAMILIES:
+        errors["primary_font_family"] = "请选择自动、衬线、无衬线或手写字体"
+    normalized["primary_font_family"] = font_family
+    normalized["only_include_translated_page"] = bool(
+        normalized.get("only_include_translated_page")
+    )
+    if normalized["only_include_translated_page"] and normalized["pages"] is None:
+        errors["only_include_translated_page"] = "请先设置页码范围"
+    normalized["disable_rich_text_translate"] = bool(
+        normalized.get("disable_rich_text_translate")
     )
 
     interval = normalized.get("report_interval")
@@ -320,8 +445,8 @@ def validate_params(
     elif glossary is None:
         errors["glossary_version_id"] = "找不到该术语版本，请重新选择"
     else:
-        target = str(glossary.get("tgt_lng") or "").strip().lower()
-        if target and target != str(normalized["lang_out"]).strip().lower():
+        target = _normalized_language(glossary.get("tgt_lng"))
+        if target and target != _normalized_language(normalized["lang_out"]):
             errors["glossary_version_id"] = (
                 f"术语表目标语言（{target}）与本次目标语言"
                 f"（{normalized['lang_out']}）不一致"
@@ -334,7 +459,14 @@ def to_engine_fields(params: Mapping[str, Any]) -> dict[str, Any]:
     """把校验后的参数映射为 :class:`EngineJobRequest` 字段。"""
     fields: dict[str, Any] = {}
     for spec in PARAM_SPECS:
-        if spec.key == "glossary_version_id":
+        if spec.key in ("glossary_version_id", "output_mode"):
+            continue
+        if spec.key == "primary_font_family":
+            family = params.get(spec.key, spec.default)
+            fields[spec.engine_field] = None if family in (None, "auto") else family
+            continue
+        if spec.key == "dual_original_position":
+            fields["dual_translate_first"] = params.get(spec.key, spec.default) == "right"
             continue
         fields[spec.engine_field] = params.get(spec.key, spec.default)
     return fields

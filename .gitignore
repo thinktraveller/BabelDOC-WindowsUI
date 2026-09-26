@@ -69,3 +69,8 @@ temp.jpg
 # 交付产物（便携目录与安装包体积大，不入库）
 /release/
 
+
+# --- project-initializer (managed) ---
+/_verify/
+/reference-projects/
+# --- /project-initializer (managed) ---

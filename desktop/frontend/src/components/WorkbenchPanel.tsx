@@ -47,6 +47,16 @@ export function resolvePendingFiles(items: UploadFile[]): File[] {
   return files;
 }
 
+/** 旧预设只保存 no_mono/no_dual；界面统一显示为单个输出类型。 */
+export function withOutputMode(params: Record<string, unknown>): Record<string, unknown> {
+  const { no_mono, no_dual, ...current } = params;
+  if (current.output_mode !== undefined) return current;
+  return {
+    ...current,
+    output_mode: no_mono && no_dual ? "legacy-invalid" : no_mono ? "dual" : no_dual ? "mono" : "both",
+  };
+}
+
 const { Dragger } = Upload;
 
 export default function WorkbenchPanel({ onOpenSettings }: Props) {
@@ -65,7 +75,9 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
   const filesQuery = useQuery({ queryKey: ["files"], queryFn: api.listFiles });
   const profilesQuery = useQuery({ queryKey: ["profiles"], queryFn: api.listProfiles });
   const presetsQuery = useQuery({ queryKey: ["presets"], queryFn: api.listPresets });
+  const langIn = Form.useWatch("lang_in", form) as string | undefined;
   const langOut = (Form.useWatch("lang_out", form) as string | undefined) ?? "zh";
+  const outputMode = Form.useWatch("output_mode", form) as string | undefined;
   const versionsQuery = useQuery({
     queryKey: ["glossary-versions", langOut],
     queryFn: () => api.listGlossaryVersions(undefined, langOut),
@@ -81,8 +93,9 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
         defaults[item.key] = item.default;
       }
     });
-    state.setParams({ ...defaults, ...state.params });
-    form.setFieldsValue({ ...defaults, ...state.params });
+    const initialParams = { ...defaults, ...withOutputMode(state.params) };
+    state.setParams(initialParams);
+    form.setFieldsValue(initialParams);
     // 只在拿到 schema 时初始化一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schemaQuery.data]);
@@ -179,6 +192,14 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
   const specs = schemaQuery.data?.items ?? [];
   const commonSpecs = specs.filter((item) => item.group === "common");
   const advancedSpecs = specs.filter((item) => item.group === "advanced");
+  const selectedLanguage = (key: string) =>
+    key === "lang_in"
+      ? langIn
+      : key === "lang_out"
+        ? langOut
+        : key === "output_mode"
+          ? outputMode
+          : undefined;
   const selectedCount = state.selectedFileIds.length;
 
   const selectedProfile = useMemo(
@@ -191,6 +212,9 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
   }));
   const selectedVersionId = Form.useWatch("glossary_version_id", form) as
     | number
+    | undefined;
+  const alternatingPages = Form.useWatch("use_alternating_pages_dual", form) as
+    | boolean
     | undefined;
   const selectedVersionLabel =
     glossaryOptions.find((option) => option.value === selectedVersionId)?.label ?? "未选择";
@@ -331,8 +355,9 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
               onChange={(value) => {
                 const preset = presetsQuery.data?.items.find((item) => item.name === value);
                 if (preset) {
-                  state.applyPreset(preset);
-                  form.setFieldsValue(preset.params);
+                  const presetParams = withOutputMode(preset.params);
+                  state.applyPreset({ ...preset, params: presetParams });
+                  form.setFieldsValue({ ...schemaQuery.data?.defaults, ...presetParams });
                 } else {
                   state.setPresetName("");
                 }
@@ -360,7 +385,15 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
             常用参数
           </Typography.Title>
           <div className="panel-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
-            {commonSpecs.map((spec) => renderField(spec, fieldErrors, glossaryOptions))}
+            {commonSpecs.map((spec) =>
+              renderField(
+                spec,
+                fieldErrors,
+                glossaryOptions,
+                alternatingPages,
+                selectedLanguage(spec.key),
+              ),
+            )}
           </div>
 
           <Collapse
@@ -373,7 +406,13 @@ export default function WorkbenchPanel({ onOpenSettings }: Props) {
                 children: (
                   <div className="panel-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
                     {advancedSpecs.map((spec) =>
-                      renderField(spec, fieldErrors, glossaryOptions),
+                      renderField(
+                        spec,
+                        fieldErrors,
+                        glossaryOptions,
+                        alternatingPages,
+                        selectedLanguage(spec.key),
+                      ),
                     )}
                   </div>
                 ),
@@ -419,12 +458,22 @@ function renderField(
   spec: ParamSpec,
   fieldErrors: Record<string, string>,
   glossaryOptions: { value: number; label: string }[] = [],
+  alternatingPages = false,
+  selectedLanguage?: string,
 ) {
   const error = fieldErrors[spec.key];
+  const bilingualPosition = spec.key === "dual_original_position";
   const common = {
     name: spec.key,
-    label: spec.label,
-    help: error ?? spec.hint,
+    label:
+      bilingualPosition && alternatingPages ? "双语原文顺序" : spec.label,
+    help:
+      error ??
+      (bilingualPosition
+        ? alternatingPages
+          ? "交替页中原文和译文的先后顺序"
+          : "同页对照中原文位于左侧或右侧"
+        : spec.hint),
     validateStatus: error ? ("error" as const) : undefined,
   };
   if (spec.type === "bool") {
@@ -456,6 +505,40 @@ function renderField(
           placeholder={glossaryOptions.length ? "选择已生成的术语版本" : "暂无可用版本"}
           options={glossaryOptions}
         />
+      </Form.Item>
+    );
+  }
+  if (spec.type === "choice") {
+    const baseOptions =
+      bilingualPosition && alternatingPages
+        ? [
+            { value: "left", label: "原文在前" },
+            { value: "right", label: "原文在后" },
+          ]
+        : spec.options ?? [];
+    const isLanguage = spec.key === "lang_in" || spec.key === "lang_out";
+    const languageOptions =
+      isLanguage &&
+      selectedLanguage &&
+      !baseOptions.some((option) => option.value === selectedLanguage)
+        ? [
+            ...baseOptions,
+            { value: selectedLanguage, label: `已有语言代码 (${selectedLanguage})` },
+          ]
+        : baseOptions;
+    const options =
+      spec.key === "output_mode" && selectedLanguage === "legacy-invalid"
+        ? [
+            ...languageOptions,
+            {
+              value: "legacy-invalid",
+              label: "旧预设同时关闭两种输出，请重新选择",
+            },
+          ]
+        : languageOptions;
+    return (
+      <Form.Item key={spec.key} {...common}>
+        <Select showSearch optionFilterProp="label" options={options} />
       </Form.Item>
     );
   }

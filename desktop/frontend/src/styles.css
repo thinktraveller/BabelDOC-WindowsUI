@@ -24,8 +24,19 @@ body {
   padding: 16px 24px 32px;
 }
 
-.app-hint {
-  margin-bottom: 12px;
+.app-tabs.ant-tabs-left > .ant-tabs-nav {
+  min-width: 168px;
+  margin-right: 20px;
+}
+
+.app-tabs.ant-tabs-left > .ant-tabs-content-holder {
+  min-width: 0;
+}
+
+@media (max-width: 767px) {
+  .app-content {
+    padding: 12px;
+  }
 }
 
 .panel-grid {

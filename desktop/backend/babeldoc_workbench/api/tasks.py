@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from babeldoc_workbench.engine.protocol import TERMINAL_EVENT_TYPES
 from babeldoc_workbench.models import TASK_TERMINAL_STATUSES, TASK_STATUSES
 from babeldoc_workbench.pdfinfo import PdfInfoError, page_count
+from babeldoc_workbench.services import app_settings
 from babeldoc_workbench.services import files as file_store
 from babeldoc_workbench.services import glossaries
 from babeldoc_workbench.services import params as params_service
@@ -23,6 +24,7 @@ from babeldoc_workbench.services import task_store
 from babeldoc_workbench.services import lifecycle
 from babeldoc_workbench.services.task_queue import (
     SKIP_TRANSLATION_KEY,
+    USER_OUTPUT_DIRS_KEY,
     TaskQueue,
     allow_skip_translation,
     ensure_task_dirs,
@@ -107,6 +109,13 @@ def create_tasks(payload: TaskCreatePayload) -> dict:
         except PdfInfoError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         prepared.append({"staged": staged, "snapshot": _validate_or_400(payload, pages=pages)})
+
+    user_output_dirs = app_settings.output_dirs()
+    if user_output_dirs:
+        for item in prepared:
+            item["snapshot"][USER_OUTPUT_DIRS_KEY] = {
+                kind: str(path) for kind, path in user_output_dirs.items()
+            }
 
     queue = get_queue()
     created = []
@@ -332,6 +341,20 @@ def open_output(task_id: int, kind: str) -> dict:
         task = task_store.get_task(task_id)
         path = lifecycle.output_path(task, kind)
         lifecycle.open_with_default_app(path)
+    except task_store.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except lifecycle.LifecycleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"task_id": task_id, "kind": kind, "path": str(path)}
+
+
+@router.post("/{task_id}/outputs/{kind}/reveal")
+def reveal_output_file(task_id: int, kind: str) -> dict:
+    """在资源管理器中显示对应成果；优先使用已导出的用户副本。"""
+    try:
+        task = task_store.get_task(task_id)
+        path = lifecycle.reveal_output_path(task, kind)
+        lifecycle.reveal_in_explorer(path.parent)
     except task_store.TaskNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except lifecycle.LifecycleError as exc:

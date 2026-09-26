@@ -21,6 +21,9 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SPEC_DIR, "..", ".."))
 BACKEND_DIR = os.path.join(PROJECT_ROOT, "desktop", "backend")
 FRONTEND_DIST = os.path.join(PROJECT_ROOT, "desktop", "frontend", "dist")
 ENTRY_SCRIPT = os.path.join(BACKEND_DIR, "babeldoc_workbench", "main.py")
+# 原项目 logo：docs/images/babeldoc-small-logo-with-transparent-background.png
+# 此 ICO 由该图生成 16–256 px 图层，用于 Windows EXE 资源。
+APP_ICON = os.path.join(SPEC_DIR, "assets", "babeldoc.ico")
 
 datas: list = []
 binaries: list = []
@@ -112,6 +115,7 @@ exe = EXE(  # noqa: F821
     [],
     exclude_binaries=True,
     name="BabelDOC",
+    icon=APP_ICON,
     console=CONSOLE_BUILD,
     disable_windowed_traceback=False,
 )

@@ -30,9 +30,10 @@ export interface ParamSpec {
   key: string;
   group: "common" | "advanced";
   label: string;
-  type: "str" | "int" | "float" | "bool" | "pages" | "glossary";
+  type: "str" | "int" | "float" | "bool" | "pages" | "glossary" | "choice";
   default: unknown;
   hint?: string;
+  options?: { value: string; label: string }[];
 }
 
 export interface ParamsSchema {

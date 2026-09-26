@@ -28,6 +28,13 @@ def test_save_same_name_overwrites(workbench_db) -> None:
     assert presets.load_preset(first["id"])["params"]["qps"] == 9
 
 
+def test_legacy_language_codes_are_preserved(workbench_db) -> None:
+    saved = presets.save_preset("已有语言代码", {"lang_in": "la", "lang_out": "zh_cn"})
+    loaded = presets.load_preset(saved["id"])
+    assert loaded["params"]["lang_in"] == "la"
+    assert loaded["params"]["lang_out"] == "zh_cn"
+
+
 def test_invalid_params_are_rejected(workbench_db) -> None:
     with pytest.raises(presets.PresetError):
         presets.save_preset("坏预设", {"qps": 0})

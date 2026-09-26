@@ -140,6 +140,135 @@ def test_create_task_runs_to_success(client: TestClient, tmp_path: Path, profile
     assert any(item["id"] == task["id"] for item in listed)
 
 
+def test_output_dirs_export_results_without_overwriting(
+    client: TestClient, queue: TaskQueue, tmp_path: Path, profile, monkeypatch
+) -> None:
+    from babeldoc_workbench.services import lifecycle
+
+    first_dirs = {kind: tmp_path / f"用户成果-{kind}" for kind in ("mono", "dual", "glossary")}
+    second_dirs = {kind: tmp_path / f"后来修改的目录-{kind}" for kind in first_dirs}
+    for path in (*first_dirs.values(), *second_dirs.values()):
+        path.mkdir()
+    assert client.put("/api/settings/app", json={
+        f"default_{kind}_output_dir": str(path) for kind, path in first_dirs.items()
+    }).status_code == 200
+
+    queue.stop()
+    staged = import_pdf(client, tmp_path)
+    first = client.post(
+        "/api/tasks",
+        json={"file_ids": [staged["id"]], "api_profile_id": profile["id"], "params": {}},
+    ).json()["items"][0]
+    assert first["params"]["_user_output_dirs"] == {
+        kind: str(path) for kind, path in first_dirs.items()
+    }
+    assert client.put("/api/settings/app", json={
+        f"default_{kind}_output_dir": str(path) for kind, path in second_dirs.items()
+    }).status_code == 200
+    queue.start()
+
+    finished = wait_for_terminal(client, first["id"])
+    assert finished["status"] == "succeeded"
+    exported = next(event["payload"] for event in finished["events"] if event["type"] == "exported")
+    assert exported["errors"] == []
+    assert {item["kind"] for item in exported["items"]} == {"mono", "dual", "glossary"}
+    assert all(Path(item["path"]).parent == first_dirs[item["kind"]] for item in exported["items"])
+    assert all(Path(item["path"]).is_file() for item in exported["items"])
+    assert all(not list(path.iterdir()) for path in second_dirs.values()), "运行前改设置不应改变已提交任务的输出目录"
+    assert all(Path(item["path"]).is_file() for item in finished["outputs"])
+    revealed: list[Path] = []
+    monkeypatch.setattr(lifecycle, "reveal_in_explorer", lambda path: revealed.append(path))
+    for kind, directory in first_dirs.items():
+        shown = client.post(f"/api/tasks/{first['id']}/outputs/{kind}/reveal")
+        assert shown.status_code == 200
+        assert Path(shown.json()["path"]).parent == directory
+    assert revealed == list(first_dirs.values())
+    manual = client.post(
+        f"/api/tasks/{first['id']}/outputs/mono/save-as",
+        json={"target_dir": str(second_dirs["mono"])},
+    )
+    assert manual.status_code == 200
+    assert Path(manual.json()["target"]).parent == second_dirs["mono"]
+    mono_source = next(Path(item["path"]) for item in finished["outputs"] if item["kind"] == "mono")
+    mono_source.unlink()
+    shown_after_cleanup = client.post(f"/api/tasks/{first['id']}/outputs/mono/reveal")
+    assert shown_after_cleanup.status_code == 200
+    assert Path(shown_after_cleanup.json()["path"]).parent == first_dirs["mono"]
+
+    assert client.put("/api/settings/app", json={
+        f"default_{kind}_output_dir": str(path) for kind, path in first_dirs.items()
+    }).status_code == 200
+    second = create_finished_task(client, tmp_path, profile)
+    second_export = next(event["payload"] for event in second["events"] if event["type"] == "exported")
+    assert second_export["errors"] == []
+    assert all("任务" in Path(item["path"]).name for item in second_export["items"])
+    assert {item["path"] for item in exported["items"]}.isdisjoint(
+        item["path"] for item in second_export["items"]
+    )
+    assert all(Path(item["path"]).is_file() for item in exported["items"])
+
+
+def test_export_failure_keeps_managed_outputs_and_success_status(
+    client: TestClient, queue: TaskQueue, tmp_path: Path, profile, monkeypatch
+) -> None:
+    from babeldoc_workbench.services import lifecycle
+
+    target = tmp_path / "随后被删除的目录"
+    retained = tmp_path / "仍存在的目录"
+    target.mkdir()
+    retained.mkdir()
+    client.put("/api/settings/app", json={
+        "default_mono_output_dir": str(target),
+        "default_dual_output_dir": str(retained),
+    })
+    queue.stop()
+    staged = import_pdf(client, tmp_path)
+    task = client.post(
+        "/api/tasks",
+        json={"file_ids": [staged["id"]], "api_profile_id": profile["id"], "params": {}},
+    ).json()["items"][0]
+    target.rmdir()
+    queue.start()
+
+    finished = wait_for_terminal(client, task["id"])
+    assert finished["status"] == "succeeded"
+    exported = next(event["payload"] for event in finished["events"] if event["type"] == "exported")
+    assert {item["kind"] for item in exported["items"]} == {"dual"}
+    assert exported["errors"]
+    assert Path(exported["items"][0]["path"]).parent == retained
+    assert all(Path(item["path"]).is_file() for item in finished["outputs"])
+    shown: list[Path] = []
+    monkeypatch.setattr(lifecycle, "reveal_in_explorer", lambda path: shown.append(path))
+    response = client.post(f"/api/tasks/{task['id']}/outputs/mono/reveal")
+    assert response.status_code == 200
+    assert Path(response.json()["path"]).parent == Path(finished["output_dir"])
+    assert shown == [Path(finished["output_dir"])]
+
+
+def test_legacy_output_dir_can_be_cleared_for_one_kind(
+    client: TestClient, tmp_path: Path, profile
+) -> None:
+    legacy = tmp_path / "旧默认目录"
+    legacy.mkdir()
+    response = client.put("/api/settings/app", json={"default_output_dir": str(legacy)})
+    assert response.status_code == 200
+    assert response.json()["default_mono_output_dir"] == str(legacy)
+    assert response.json()["default_dual_output_dir"] == str(legacy)
+    assert response.json()["default_glossary_output_dir"] == str(legacy)
+    response = client.put("/api/settings/app", json={"default_glossary_output_dir": ""})
+    assert response.status_code == 200
+    assert response.json()["default_glossary_output_dir"] == ""
+
+    finished = create_finished_task(client, tmp_path, profile)
+    assert finished["params"]["_user_output_dirs"] == {
+        "mono": str(legacy), "dual": str(legacy),
+    }
+    exported = next(event["payload"] for event in finished["events"] if event["type"] == "exported")
+    assert {item["kind"] for item in exported["items"]} == {"mono", "dual"}
+    assert exported["errors"] == []
+    assert all(Path(item["path"]).is_file() for item in finished["outputs"])
+
+
 def test_create_task_rejects_invalid_params(client: TestClient, tmp_path: Path, profile) -> None:
     staged = import_pdf(client, tmp_path)
     response = client.post(

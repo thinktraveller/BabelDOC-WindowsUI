@@ -92,11 +92,16 @@ class EngineJobRequest:
     term_pool_max_workers: int | None = None
     report_interval: float = DEFAULT_REPORT_INTERVAL
     max_pages_per_part: int | None = None
+    primary_font_family: str | None = None
+    only_include_translated_page: bool = False
+    min_text_length: int = 5
+    disable_rich_text_translate: bool = False
     auto_extract_glossary: bool = True
     glossary_files: tuple[str, ...] = ()
     custom_system_prompt: str | None = None
     watermark_output_mode: str = DEFAULT_WATERMARK_MODE
     use_alternating_pages_dual: bool = False
+    dual_translate_first: bool = False
     # 仅用于离线自检：跳过 LLM 翻译阶段，不发任何网络请求
     skip_translation: bool = False
     debug: bool = False

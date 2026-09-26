@@ -5,7 +5,8 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import WorkbenchPanel from "./WorkbenchPanel";
+import WorkbenchPanel, { withOutputMode } from "./WorkbenchPanel";
+import { useWorkbench } from "../store";
 
 /**
  * 回归测试：用户报告「导入选中文件时显示 HTTP 422」。
@@ -92,14 +93,139 @@ describe("导入选中文件", () => {
             groups: [{ id: "common", label: "常用" }],
             items: [
               {
+                key: "lang_in",
+                group: "common",
+                label: "源语言",
+                type: "choice",
+                default: "en",
+                options: [
+                  { value: "en", label: "英语 (en)" },
+                  { value: "zh-cn", label: "简体中文 (zh-cn)" },
+                ],
+              },
+              {
                 key: "lang_out",
                 group: "common",
                 label: "目标语言",
-                type: "str",
+                type: "choice",
                 default: "zh",
+                options: [
+                  { value: "en", label: "英语 (en)" },
+                  { value: "zh", label: "中文 (zh)" },
+                  { value: "zh-cn", label: "简体中文 (zh-cn)" },
+                ],
+              },
+              {
+                key: "pages",
+                group: "common",
+                label: "页码范围",
+                type: "pages",
+                default: null,
+              },
+              {
+                key: "output_mode",
+                group: "common",
+                label: "输出类型",
+                type: "choice",
+                default: "both",
+                options: [
+                  { value: "both", label: "同时输出单语与双语" },
+                  { value: "mono", label: "仅输出单语" },
+                  { value: "dual", label: "仅输出双语" },
+                ],
+              },
+              {
+                key: "dual_original_position",
+                group: "advanced",
+                label: "双语原文位置",
+                type: "choice",
+                default: "left",
+                options: [
+                  { value: "left", label: "左侧（交替页时在前）" },
+                  { value: "right", label: "右侧（交替页时在后）" },
+                ],
+              },
+              {
+                key: "use_alternating_pages_dual",
+                group: "advanced",
+                label: "双语排列为交替页",
+                type: "bool",
+                default: false,
+              },
+              {
+                key: "auto_extract_glossary",
+                group: "advanced",
+                label: "自动提取术语",
+                type: "bool",
+                default: true,
+              },
+              {
+                key: "glossary_version_id",
+                group: "advanced",
+                label: "使用术语版本",
+                type: "glossary",
+                default: null,
+              },
+              {
+                key: "watermark_output_mode",
+                group: "advanced",
+                label: "水印输出模式",
+                type: "choice",
+                default: "watermarked",
+                options: [
+                  { value: "watermarked", label: "添加水印" },
+                  { value: "no_watermark", label: "不添加水印" },
+                  { value: "both", label: "同时输出两种版本" },
+                ],
+              },
+              {
+                key: "primary_font_family",
+                group: "advanced",
+                label: "译文字体风格",
+                type: "choice",
+                default: "auto",
+                options: [
+                  { value: "auto", label: "自动选择" },
+                  { value: "serif", label: "衬线字体" },
+                ],
+              },
+              {
+                key: "only_include_translated_page",
+                group: "advanced",
+                label: "仅保留所选翻译页",
+                type: "bool",
+                default: false,
+              },
+              {
+                key: "min_text_length",
+                group: "advanced",
+                label: "最短翻译文本长度",
+                type: "int",
+                default: 5,
+              },
+              {
+                key: "disable_rich_text_translate",
+                group: "advanced",
+                label: "关闭富文本翻译",
+                type: "bool",
+                default: false,
               },
             ],
-            defaults: { lang_out: "zh" },
+            defaults: {
+              lang_in: "en",
+              lang_out: "zh",
+              pages: null,
+              output_mode: "both",
+              dual_original_position: "left",
+              use_alternating_pages_dual: false,
+              auto_extract_glossary: true,
+              glossary_version_id: null,
+              watermark_output_mode: "watermarked",
+              primary_font_family: "auto",
+              only_include_translated_page: false,
+              min_text_length: 5,
+              disable_rich_text_translate: false,
+            },
           }),
         );
       }
@@ -125,6 +251,7 @@ describe("导入选中文件", () => {
 
   afterEach(() => {
     cleanup();
+    useWorkbench.getState().setParams({});
     delete (window as unknown as { __WORKBENCH_TOKEN__?: string }).__WORKBENCH_TOKEN__;
     vi.unstubAllGlobals();
   });
@@ -155,5 +282,76 @@ describe("导入选中文件", () => {
     renderPanel();
     const button = await waitFor(importButton);
     expect(button.disabled).toBe(true);
+  });
+
+  it("页码和输出类型并列，双语原文位置位于高级参数", async () => {
+    const user = userEvent.setup();
+    const { container, findByText, queryByText } = renderPanel();
+    expect(await findByText("输出类型")).toBeTruthy();
+    const commonGrid = Array.from(container.querySelectorAll<HTMLElement>(".panel-grid")).find(
+      (element) => element.style.gridTemplateColumns === "1fr 1fr",
+    );
+    expect(commonGrid).toBeTruthy();
+    const cells = Array.from(commonGrid?.children ?? []).map((element) => element.textContent ?? "");
+    expect(cells[0]).toContain("源语言");
+    expect(cells[1]).toContain("目标语言");
+    expect(cells[2]).toContain("页码范围");
+    expect(cells[3]).toContain("输出类型");
+    expect(queryByText("不输出单语")).toBeNull();
+    expect(queryByText("不输出双语")).toBeNull();
+    expect(queryByText("双语原文位置")).toBeNull();
+    expect(queryByText("双语排列为交替页")).toBeNull();
+    expect(queryByText("自动提取术语")).toBeNull();
+    await user.click(await findByText("高级参数"));
+    const alternatingLabel = await findByText("双语排列为交替页");
+    expect(alternatingLabel).toBeTruthy();
+    expect(await findByText("双语原文位置")).toBeTruthy();
+    expect(await findByText("自动提取术语")).toBeTruthy();
+    expect(await findByText("使用术语版本")).toBeTruthy();
+    expect(await findByText("译文字体风格")).toBeTruthy();
+    expect(await findByText("仅保留所选翻译页")).toBeTruthy();
+    expect(await findByText("最短翻译文本长度")).toBeTruthy();
+    expect(await findByText("关闭富文本翻译")).toBeTruthy();
+    const alternatingSwitch = alternatingLabel.closest(".ant-form-item")?.querySelector<HTMLElement>("[role='switch']");
+    expect(alternatingSwitch).toBeTruthy();
+    await user.click(alternatingSwitch as HTMLElement);
+    expect(await findByText("双语原文顺序")).toBeTruthy();
+  });
+
+  it("语言和水印使用下拉，已有其它合法语言代码仍可回显", async () => {
+    const user = userEvent.setup();
+    useWorkbench.getState().setParams({
+      lang_in: "la",
+      lang_out: "zh_cn",
+      watermark_output_mode: "both",
+    });
+    const { container, findByText } = renderPanel();
+    await findByText("源语言");
+    expect(container.querySelector("#lang_in")?.getAttribute("role")).toBe("combobox");
+    expect(container.querySelector("#lang_out")?.getAttribute("role")).toBe("combobox");
+
+    expect(await findByText("已有语言代码 (la)")).toBeTruthy();
+    expect(await findByText("已有语言代码 (zh_cn)")).toBeTruthy();
+
+    await user.click(await findByText("高级参数"));
+    expect(container.querySelector("#watermark_output_mode")?.getAttribute("role")).toBe(
+      "combobox",
+    );
+    expect(await findByText("同时输出两种版本")).toBeTruthy();
+  });
+
+  it("旧输出开关组合转换为新下拉；两种都关闭时提示重选", () => {
+    expect(withOutputMode({ no_mono: false, no_dual: false }).output_mode).toBe("both");
+    expect(withOutputMode({ no_mono: false, no_dual: true }).output_mode).toBe("mono");
+    expect(withOutputMode({ no_mono: true, no_dual: false }).output_mode).toBe("dual");
+    expect(withOutputMode({ no_mono: true, no_dual: true }).output_mode).toBe(
+      "legacy-invalid",
+    );
+    expect(withOutputMode({ no_mono: true, no_dual: true })).not.toHaveProperty("no_mono");
+    expect(withOutputMode({ no_mono: true, no_dual: true })).not.toHaveProperty("no_dual");
+    expect(withOutputMode({ output_mode: "both", no_mono: true, no_dual: true })).toEqual({
+      output_mode: "both",
+    });
+    expect(withOutputMode({ output_mode: "dual" }).output_mode).toBe("dual");
   });
 });
