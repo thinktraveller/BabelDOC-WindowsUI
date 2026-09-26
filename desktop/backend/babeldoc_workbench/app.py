@@ -463,6 +463,14 @@ def run_app(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
+    from babeldoc_workbench.services.assets import AssetsError, restore_bundled_assets
+
+    try:
+        restore_bundled_assets()
+    except AssetsError as exc:
+        emit_report(f"❌ {exc}", args.report_file)
+        return 1
+
     if args.self_check:
         return run_self_check(args)
     if args.verify_job:

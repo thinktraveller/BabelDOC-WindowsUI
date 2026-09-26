@@ -23,6 +23,28 @@ class AssetsError(RuntimeError):
     pass
 
 
+def restore_bundled_assets() -> bool:
+    """首次运行完整单文件版时，从内置资源包恢复模型和字体到用户缓存。"""
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if not getattr(sys, "frozen", False) or not bundle_root:
+        return False
+    archives = list((Path(bundle_root) / "offline_assets").glob("offline_assets_*.zip"))
+    if not archives:
+        return False
+    if len(archives) != 1:
+        raise AssetsError("内置离线资源包数量不正确")
+    from babeldoc.assets import assets as engine_assets
+
+    try:
+        # 引擎按自身清单逐项校验；已存在的正确文件不会重复写入。
+        engine_assets.restore_offline_assets_package(archives[0])
+    except SystemExit as exc:
+        raise AssetsError("内置离线资源包校验或恢复失败") from exc
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise AssetsError(f"无法恢复内置资源：{exc}") from exc
+    return True
+
+
 def engine_cache_dir() -> Path:
     from babeldoc_workbench.engine.selfcheck import engine_cache_folder
 
